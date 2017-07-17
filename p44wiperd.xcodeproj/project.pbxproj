@@ -154,10 +154,10 @@
 		ED53725E1DFC28D00066FF5A /* src */ = {
 			isa = PBXGroup;
 			children = (
-				ED08E1581F1D0BD900A54C05 /* p44wiperd_main.cpp */,
+				ED5372661DFC2C6D0066FF5A /* p44utils */,
 				ED08E1591F1D0BD900A54C05 /* dcmotordriver.hpp */,
 				ED08E15A1F1D0BD900A54C05 /* dcmotordriver.cpp */,
-				ED5372661DFC2C6D0066FF5A /* p44utils */,
+				ED08E1581F1D0BD900A54C05 /* p44wiperd_main.cpp */,
 			);
 			path = src;
 			sourceTree = "<group>";
