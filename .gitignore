@@ -1,0 +1,18 @@
+# XCode
+p44wiperd.xcodeproj/project.xcworkspace/xcuserdata/luz.xcuserdatad/UserInterfaceState.xcuserstate
+# automake
+*.o
+.deps
+.dirstamp
+config.*
+Makefile.in
+aclocal.m4
+autom4te.cache/
+configure
+configure_aux/
+stamp-h1
+# binary
+/usr/bin
+/build
+/p44sbbd
+p44wiperd.xcodeproj/project.xcworkspace/xcshareddata/p44wiperd.xcscmblueprint
