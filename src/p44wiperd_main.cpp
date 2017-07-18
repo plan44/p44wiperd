@@ -1,9 +1,9 @@
 //
-//  Copyright (c) 2016 plan44.ch / Lukas Zeller, Zurich, Switzerland
+//  Copyright (c) 2017 plan44.ch / Lukas Zeller, Zurich, Switzerland
 //
 //  Author: Lukas Zeller <luz@plan44.ch>
 //
-//  This file is part of pixelboardd.
+//  This file is part of p44wiperd.
 //
 //  pixelboardd is free software: you can redistribute it and/or modify
 //  it under the terms of the GNU General Public License as published by
@@ -33,19 +33,28 @@ using namespace p44;
 
 
 /// Main program for plan44.ch P44-DSB-DEH in form of the "vdcd" daemon)
-class P44BanditD : public CmdLineApp
+class P44WiperD : public CmdLineApp
 {
   typedef CmdLineApp inherited;
 
   // API Server
   SocketCommPtr apiServer;
-  BanditCommPtr banditComm;
+
+  DcMotorDriverPtr motorDriver;
+  DigitalIoPtr zeroPosInput;
+
+  DigitalIoPtr movementInput;
+
+  ButtonInputPtr button;
+  IndicatorOutputPtr greenLed;
+  IndicatorOutputPtr redLed;
+
 
   MLMicroSeconds starttime;
 
 public:
 
-  P44BanditD() :
+  P44WiperD() :
     starttime(MainLoop::now())
   {
   }
@@ -60,14 +69,20 @@ public:
       { 'l', "loglevel",       true,  "level;set max level of log message detail to show on stdout" },
       { 0  , "errlevel",       true,  "level;set max level for log messages to go to stderr as well" },
       { 0  , "dontlogerrors",  false, "don't duplicate error messages (see --errlevel) on stdout" },
-      { 0  , "serialport",     true,  "serial port device; specify the serial port device" },
-      { 0  , "hsoutpin",       true,  "pin specification; serial handshake output line" },
-      { 0  , "hsinpin",        true,  "pin specification; serial handshake input line" },
-      { 0  , "receive",        false, "receive data from bandit and show it on stdout" },
-      { 0  , "startonhs",      false, "start only on input handshake becoming active" },
-      { 0  , "stoponhs",       false, "stop only on input handshake becoming inactive" },
-      { 0  , "hsonstart",      false, "set handshake line active already before sending or receiving" },
-      { 0  , "send",           true,  "file; send file to bandit" },
+      { 0  , "poweroutput",    true,  "analog output pinspec; analog output that drives the motor power" },
+      { 0  , "cwoutput",       true,  "output pinspec; digital output for indicating clockwise operation" },
+      { 0  , "ccwoutput",      true,  "output pinspec; digital output for indicating counter clockwise operation" },
+      { 0  , "zeroposinput",   true,  "input pinspec; digital input indicating zero position" },
+      { 0  , "movementinput",  true,  "input pinspec; digital input indicating movement" },
+      { 0  , "button",         true,  "input pinspec; device button" },
+      { 0  , "greenled",       true,  "output pinspec; green device LED" },
+      { 0  , "redled",         true,  "output pinspec; red device LED" },
+      { 0  , "initialpower",   true,  "float;initial power, 0..100" },
+      { 0  , "power",          true,  "float;end-of-rampp power, 0..100" },
+      { 0  , "initialdir",     true,  "int;initial direction -1,0,1" },
+      { 0  , "dir",            true,  "int;direction -1,0,1" },
+      { 0  , "exp",            true,  "float;exponent for ramp, 1=linear" },
+      { 0  , "fullramp",       true,  "float;seconds for full ramp" },
       { 'h', "help",           false, "show this text" },
       { 0, NULL } // list terminator
     };
@@ -91,12 +106,26 @@ public:
       getIntOption("errlevel", errlevel);
       SETERRLEVEL(errlevel, !getOption("dontlogerrors"));
 
-      // - create and start bandit comm
-      banditComm = BanditCommPtr(new BanditComm(MainLoop::currentMainLoop()));
-      string serialport;
-      if (getStringOption("serialport", serialport)) {
-        banditComm->setConnectionSpecification(serialport.c_str(), 2101, getOption("hsoutpin", "missing"), getOption("hsinpin", "missing"));
-      }
+      // - create button input
+      button = ButtonInputPtr(new ButtonInput(getOption("button","missing")));
+      button->setButtonHandler(boost::bind(&P44WiperD::buttonHandler, this, _1, _2, _3), true, true);
+      // - create LEDs
+      greenLed = IndicatorOutputPtr(new IndicatorOutput(getOption("greenled","missing")));
+      redLed = IndicatorOutputPtr(new IndicatorOutput(getOption("redled","missing")));
+
+      // - create motor driver
+      motorDriver = DcMotorDriverPtr(new DcMotorDriver(
+        getOption("poweroutput","missing"),
+        getOption("cwoutput","missing"),
+        getOption("ccwoutput","missing")
+      ));
+      // - create zero position input
+      zeroPosInput = DigitalIoPtr(new DigitalIo(getOption("zeroposinput","missing"), false, false));
+      zeroPosInput->setInputChangedHandler(boost::bind(&P44WiperD::zeroPosHandler, this, _1), 40*MilliSecond, 0);
+
+      // movement detector input
+      movementInput = DigitalIoPtr(new DigitalIo(getOption("movementInput","missing"), false, false));
+      movementInput->setInputChangedHandler(boost::bind(&P44WiperD::movementHandler, this, _1), 0, 0);
 
       // - create and start API server and wait for things to happen
       string apiport;
@@ -104,7 +133,7 @@ public:
         apiServer = SocketCommPtr(new SocketComm(MainLoop::currentMainLoop()));
         apiServer->setConnectionParams(NULL, apiport.c_str(), SOCK_STREAM, AF_INET);
         apiServer->setAllowNonlocalConnections(getOption("jsonapinonlocal"));
-        apiServer->startServer(boost::bind(&P44BanditD::apiConnectionHandler, this, _1), 3);
+        apiServer->startServer(boost::bind(&P44WiperD::apiConnectionHandler, this, _1), 3);
       }
 
 
@@ -114,87 +143,67 @@ public:
   }
 
 
-//  bool string_load(FILE *aFile, string &aData)
-//  {
-//    const size_t bufLen = 1024;
-//    char buf[bufLen];
-//    aData.clear();
-//    bool eof = false;
-//    while (!eof) {
-//      char *p = fgets(buf, bufLen-1, aFile);
-//      if (!p) {
-//        // eof or error
-//        if (feof(aFile)) return !aData.empty(); // eof is ok if it occurs after having collected some data, otherwise it means: no more lines
-//        return false;
-//      }
-//      // something read
-//      size_t l = strlen(buf);
-//      // check for CR, LF or CRLF
-//      if (l>0 && buf[l-1]=='\n') {
-//        l--;
-//        eol = true;
-//      }
-//      if (l>0 && buf[l-1]=='\r') {
-//        l--;
-//        eol = true;
-//      }
-//      // collect
-//      aLine.append(buf,l);
-//    }
-//    return true;
-//  }
+  void buttonHandler(bool aState, bool aHasChanged, MLMicroSeconds aTimeSincePreviousChange)
+  {
+    // %%% Nop for now
+    if (aHasChanged && aState) {
+      motorDriver->stop();
+    }
+  }
+
+
+  void zeroPosHandler(bool aNewState)
+  {
+    // %%% Nop for now
+    LOG(LOG_NOTICE, "Zero position signal = %d", aNewState);
+  }
+
+
+  void movementHandler(bool aNewState)
+  {
+    // %%% Nop for now
+    LOG(LOG_NOTICE, "Movement signal = %d", aNewState);
+  }
 
 
 
-//  string data =
-//    "N001&G99\n"
-//    "Z18.Y111.X-217.G92\n"
-//    "G98\n"
-//    "G91\n"
-//    "F80.\n"
-//    "X-4.\n"
-//    "I4.\n"
-//    "/G5\n"
-//    "N8\n";
 
 
   virtual void initialize()
   {
-    string fn;
-    if (getOption("receive")) {
-      banditComm->receive(
-        boost::bind(&P44BanditD::receiveResult, this, _1, _2),
-        getOption("hsonstart"),
-        getOption("startonhs"),
-        getOption("stoponhs")
-      );
+    string s;
+    double initialPower = 0;
+    if (getStringOption("initialpower",s)) {
+      sscanf(s.c_str(),"%lf", &initialPower);
     }
-    else if (getStringOption("send", fn)) {
-      string data;
-      FILE *inFile = fopen(fn.c_str(), "r");
-      if (inFile && string_fgetfile(inFile, data)) {
-        banditComm->send(
-          boost::bind(&P44BanditD::sendComplete, this, _1),
-          data,
-          getOption("hsonstart")
-        );
-      }
-      else {
-        LOG(LOG_ERR, "Cannot open input file '%s'", fn.c_str());
-        terminateApp(1);
-      }
+    double exp = 1;
+    if (getStringOption("exp",s)) {
+      sscanf(s.c_str(),"%lf", &exp);
     }
-    else {
-      LOG(LOG_NOTICE, "No daemon operation implemented yet");
+    if (getStringOption("power",s)) {
+      double power = 0;
+      sscanf(s.c_str(),"%lf", &power);
+      int dir = 0;
+      getIntOption("dir", dir);
+      int initialdir = dir;
+      getIntOption("initialdir", initialdir);
+      double ramp = 2; // 2 seconds default
+      if (getStringOption("fullramp",s)) {
+        sscanf(s.c_str(),"%lf", &ramp);
+      }
+      // start
+      motorDriver->rampToPower(initialPower, initialdir, 0, exp);
+      // now run motor this way
+      motorDriver->rampToPower(power, dir, ramp, exp, boost::bind(&P44WiperD::rampComplete, this, _1, _2, _3));
     }
   }
 
 
-  void sendComplete(ErrorPtr aError)
+  void rampComplete(double aCurrentPower, int aDirection, ErrorPtr aError)
   {
     if (Error::isOK(aError)) {
       // print data to stdout
-      LOG(LOG_NOTICE, "Successfully sent data");
+      LOG(LOG_NOTICE, "Ramp complete, power=%.2f%%, direction=%d", aCurrentPower, aDirection);
     }
     else {
       LOG(LOG_ERR, "Error receiving data: %s", aError->description().c_str());
@@ -203,27 +212,13 @@ public:
   }
 
 
-
-  void receiveResult(const string &aResponse, ErrorPtr aError)
-  {
-    if (Error::isOK(aError)) {
-      // print data to stdout
-      LOG(LOG_NOTICE, "Successfully received %zd bytes of data", aResponse.size());
-      fputs(aResponse.c_str(), stdout);
-      fflush(stdout);
-    }
-    else {
-      LOG(LOG_ERR, "Error receiving data: %s", aError->description().c_str());
-    }
-    terminateAppWith(aError);
-  }
 
 
 
   SocketCommPtr apiConnectionHandler(SocketCommPtr aServerSocketComm)
   {
     JsonCommPtr conn = JsonCommPtr(new JsonComm(MainLoop::currentMainLoop()));
-    conn->setMessageHandler(boost::bind(&P44BanditD::apiRequestHandler, this, conn, _1, _2));
+    conn->setMessageHandler(boost::bind(&P44WiperD::apiRequestHandler, this, conn, _1, _2));
     conn->setClearHandlersAtClose(); // close must break retain cycles so this object won't cause a mem leak
     return conn;
   }
@@ -397,7 +392,7 @@ int main(int argc, char **argv)
   // create the mainloop
   MainLoop::currentMainLoop().setLoopCycleTime(MAINLOOP_CYCLE_TIME_uS);
   // create app with current mainloop
-  static P44BanditD application;
+  static P44WiperD application;
   // pass control
   return application.main(argc, argv);
 }

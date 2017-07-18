@@ -3,7 +3,7 @@
 //
 //  Author: Lukas Zeller <luz@plan44.ch>
 //
-//  This file is part of p44bandit.
+//  This file is part of p44wiperd.
 //
 //  p44ayabd is free software: you can redistribute it and/or modify
 //  it under the terms of the GNU General Public License as published by
@@ -24,172 +24,145 @@
 #include "consolekey.hpp"
 #include "application.hpp"
 
+#include <math.h>
+
 using namespace p44;
 
-#define BANDIT_COMMPARAMS "1200,7,E,2"
 
+#pragma mark - DCMotorDriver
 
-#pragma mark - BanditComm
-
-BanditComm::BanditComm(MainLoop &aMainLoop) :
-	inherited(aMainLoop),
-  banditState(banditstate_idle),
-  endOnHandshake(false),
-  timeoutTicket(0)
+DcMotorDriver::DcMotorDriver(const char *aPWMOutput, const char *aCWDirectionOutput, const char *aCCWDirectionOutput) :
+  currentPower(0),
+  currentDirection(0),
+  rampTicket(0)
 {
-}
-
-
-BanditComm::~BanditComm()
-{
-  stop();
-}
-
-
-void BanditComm::setConnectionSpecification(const char *aConnectionSpec, uint16_t aDefaultPort, const char *aRtsDtrOutput, const char *aCtsDsrDcdInput)
-{
-  LOG(LOG_DEBUG, "BanditComm::setConnectionSpecification: %s", aConnectionSpec);
-  // setup serial
-  inherited::setConnectionSpecification(aConnectionSpec, aDefaultPort, BANDIT_COMMPARAMS);
-  // setup handshake lines
-  rtsDtrOutput = DigitalIoPtr(new DigitalIo(aRtsDtrOutput, true, false));
-  ctsDsrDcdInput = DigitalIoPtr(new DigitalIo(aCtsDsrDcdInput, false, false));
-  // open serial device
-  ErrorPtr err = establishConnection();
-  if (!Error::isOK(err)) {
-    LOG(LOG_ERR, "Cannot establish BANDIT connection: %s", err->description().c_str());
-    return;
-  }
-  // connection ok, set handler
-  setReceiveHandler(boost::bind(&BanditComm::receiveHandler, this, _1));
-  // set handshake line monitor
-  ctsDsrDcdInput->setInputChangedHandler(boost::bind(&BanditComm::handshakeChanged, this, _1), 0, 100*MilliSecond);
-}
-
-
-void BanditComm::stop()
-{
-  responseCB = NULL;
-  banditState = banditstate_idle;
-  MainLoop::currentMainLoop().cancelExecutionTicket(timeoutTicket);
-  rtsDtrOutput->off();
-}
-
-
-void BanditComm::end(ErrorPtr aError, string aData)
-{
-  BanditResponseCB c = responseCB;
-  stop();
-  if (c) {
-    c(aData, aError);
-  }
-}
-
-
-
-void BanditComm::handshakeChanged(bool aNewState)
-{
-  LOG(LOG_INFO, "Handshake line changed to %d", aNewState);
-  if (banditState==banditstate_receivewait) {
-    // set handshake line now
-    if (aNewState) {
-      LOG(LOG_INFO, "Input handshake got active -> starting receive");
-      startReceive();
+  pwmOutput = AnalogIoPtr(new AnalogIo(aPWMOutput, true, 0)); // off to begin with
+  if (aCWDirectionOutput) {
+    cwDirectionOutput = DigitalIoPtr(new DigitalIo(aCWDirectionOutput, true, false));
+    if (aCCWDirectionOutput) {
+      ccwDirectionOutput = DigitalIoPtr(new DigitalIo(aCCWDirectionOutput, true, false));
     }
   }
-  else if (banditState==banditstate_receiving) {
-    if (endOnHandshake && aNewState==false) {
-      LOG(LOG_INFO, "Input handshake got inactive -> assume all data received");
-      end(ErrorPtr(), data);
-    }
-  }
+  setPower(0, 0);
 }
 
 
-#define RECEIVE_TIMEOUT (5*Second)
-
-void BanditComm::receiveHandler(ErrorPtr aError)
+DcMotorDriver::~DcMotorDriver()
 {
-  string d;
-  ErrorPtr err = receiveAndAppendToString(d);
-  if (Error::isOK(err)) {
-    if (banditState==banditstate_receiving) {
-      // accumulate
-      MainLoop::currentMainLoop().rescheduleExecutionTicket(timeoutTicket, RECEIVE_TIMEOUT);
-      LOG(LOG_INFO, "Received Data: %s", d.c_str());
-      data.append(d);
+  // stop power to motor
+  setPower(0, 0);
+}
+
+
+
+void DcMotorDriver::setDirection(int aDirection)
+{
+  if (cwDirectionOutput) {
+    cwDirectionOutput->set(aDirection>0);
+    if (ccwDirectionOutput) {
+      ccwDirectionOutput->set(aDirection<0);
     }
-    else {
-      LOG(LOG_NOTICE, "Received stray Data: %s", d.c_str());
-      // stray data
-    }
+  }
+  currentDirection = aDirection;
+}
+
+
+
+void DcMotorDriver::setPower(double aPower, int aDirection)
+{
+  if (aPower<=0) {
+    // no power
+    // - disable PWM
+    pwmOutput->setValue(0);
+    // - off (= hold/brake with no power)
+    setDirection(0);
   }
   else {
-    if (banditState!=banditstate_idle) {
-      // report error and stop
-      end(aError);
+    // determine current direction
+    if (currentDirection!=0 && aDirection!=0 && aDirection!=currentDirection) {
+      // avoid reversing direction with power on
+      pwmOutput->setValue(0);
+      setDirection(0);
     }
+    // now set desired direction and power
+    setDirection(aDirection);
+    pwmOutput->setValue(aPower);
   }
+  currentPower = aPower;
 }
 
 
-void BanditComm::startReceive()
+#define RAMP_STEP_TIME (50*MilliSecond)
+
+
+void DcMotorDriver::stop()
 {
-  banditState = banditstate_receiving;
-  // set handshake line right away
-  rtsDtrOutput->on();
-  // set timeout
-  MainLoop::currentMainLoop().executeTicketOnce(timeoutTicket, boost::bind(&BanditComm::timeout, this), RECEIVE_TIMEOUT);
+  MainLoop::currentMainLoop().cancelExecutionTicket(rampTicket);
+  setPower(0, 0);
 }
 
 
 
-void BanditComm::timeout()
+static double powerToOut(double aPower, double aExp)
 {
-  LOG(LOG_NOTICE, "Timeout -> stopping");
-  if (data.size()>0) {
-    end(ErrorPtr(), data);
+  if (aExp==1) return aPower;
+  return 100*((exp(aPower*aExp/100)-1)/(exp(aExp)-1));
+}
+
+
+
+
+void DcMotorDriver::rampToPower(double aPower, int aDirection, double aFullRampTime, double aRampExp, DCMotorStatusCB aRampDoneCB)
+{
+  MainLoop::currentMainLoop().cancelExecutionTicket(rampTicket);
+  if (aDirection!=currentDirection) {
+    if (currentPower!=0) {
+      // ramp to zero first, then ramp up to new direction
+      rampToPower(0, currentDirection, aFullRampTime, aRampExp, boost::bind(&DcMotorDriver::rampToPower, this, aPower, aDirection, aFullRampTime, aRampExp, aRampDoneCB));
+      return;
+    }
+    // set new direction
+    setDirection(aDirection);
+  }
+  // limit
+  if (aPower>100) aPower=100;
+  else if (aPower<0) aPower=0;
+  // ramp to new value
+  double rampRange = aPower-currentPower;
+  MLMicroSeconds totalRampTime = fabs(rampRange)/100*aFullRampTime*Second;
+  double powerStep = rampRange;
+  if (totalRampTime>0) {
+    powerStep = rampRange*RAMP_STEP_TIME/totalRampTime;
+  }
+  // now execute the ramp
+  rampStep(aPower, powerStep, totalRampTime, aRampExp, aRampDoneCB);
+}
+
+
+
+void DcMotorDriver::rampStep(double aTargetPower, double aPowerStep, MLMicroSeconds aRemainingTime, double aRampExp, DCMotorStatusCB aRampDoneCB)
+{
+  if (aRemainingTime<RAMP_STEP_TIME) {
+    // finalize
+    setPower(powerToOut(aTargetPower, aRampExp), currentDirection);
+    // call back
+    if (aRampDoneCB) aRampDoneCB(currentPower, currentDirection, ErrorPtr());
   }
   else {
-    end(TextError::err("Timeout while waiting for data"));
+    // set power for this step
+    setPower(powerToOut(currentPower+aPowerStep, aRampExp), currentDirection);
+    // schedule next step
+    rampTicket = MainLoop::currentMainLoop().executeOnce(boost::bind(&DcMotorDriver::rampStep, this, aTargetPower, aPowerStep, aRemainingTime-RAMP_STEP_TIME, aRampExp, aRampDoneCB), RAMP_STEP_TIME);
   }
 }
 
 
-void BanditComm::receive(BanditResponseCB aResponseCB, bool aHandShakeOnStart, bool aWaitForHandshake, bool aEndOnHandshake)
-{
-  stop();
-  endOnHandshake = aEndOnHandshake;
-  responseCB = aResponseCB;
-  data.clear();
-  if (aHandShakeOnStart) {
-    rtsDtrOutput->on();
-  }
-  if (aWaitForHandshake) {
-    banditState = banditstate_receivewait;
-  }
-  else {
-    startReceive();
-  }
-}
 
 
-#define BYTE_TIME (Second/1200*11)
-#define SEND_FINISH_DELAY (BYTE_TIME*4)
-
-void BanditComm::send(StatusCB aStatusCB, string aData, bool aEnableHandshake)
-{
-  // FIXME: send line per line, maybe check handshake line, callback only when finished
-  if (aEnableHandshake)
-    rtsDtrOutput->on();
-  MainLoop::currentMainLoop().executeTicketOnce(timeoutTicket, boost::bind(&BanditComm::dataSent, this, aStatusCB), BYTE_TIME*aData.size()+SEND_FINISH_DELAY);
-  sendString(aData);
-}
 
 
-void BanditComm::dataSent(StatusCB aStatusCB)
-{
-  rtsDtrOutput->off();
-  if (aStatusCB) aStatusCB(ErrorPtr());
-}
+
+
+
+
 

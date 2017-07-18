@@ -26,64 +26,57 @@
 
 #include "serialcomm.hpp"
 #include "digitalio.hpp"
+#include "analogio.hpp"
 
 using namespace std;
 
 namespace p44 {
 
 
-  class BanditComm;
+  class DcMotorDriver;
 
 
-  typedef boost::function<void (const string &aResponse, ErrorPtr aError)> BanditResponseCB;
+  typedef boost::function<void (double aCurrentPower, int aDirection, ErrorPtr aError)> DCMotorStatusCB;
 
 
-  typedef boost::intrusive_ptr<BanditComm> BanditCommPtr;
-  class BanditComm : public SerialComm
+  typedef boost::intrusive_ptr<DcMotorDriver> DcMotorDriverPtr;
+  class DcMotorDriver : public P44Obj
   {
-    typedef SerialComm inherited;
+    typedef P44Obj inherited;
 
-    DigitalIoPtr rtsDtrOutput;
-    DigitalIoPtr ctsDsrDcdInput;
+    AnalogIoPtr pwmOutput;
+    DigitalIoPtr cwDirectionOutput;
+    DigitalIoPtr ccwDirectionOutput;
 
-    BanditResponseCB responseCB;
+    int currentDirection;
+    double currentPower;
 
-    enum {
-      banditstate_idle,
-      banditstate_receivewait,
-      banditstate_receiving
-    } banditState;
-
-    string data;
-    bool endOnHandshake;
-    long timeoutTicket;
+    long rampTicket;
 
   public:
 
-    BanditComm(MainLoop &aMainLoop);
-    virtual ~BanditComm();
+    /// Create a motor controller
+    /// @param aPWMOutput a 0..100 Analog output controlling the PWM signal for the DC motor
+    /// @param aCWDirectionOutput a digital output enabling clockwise motor operation.
+    ///   If no CCW output is set, this is assumed to just switch the direction (1=CW, 0=CCW)
+    ///   If no CW output is set, this is assumed to be a unidirectional motor which is only controlled via the PWM
+    /// @param aCCWDirectionOutput a digital output enabling counter clockwise motor operation.
+    ///   If this is set, CW and CCW are assumed to each control one of the half bridges,
+    ///   so using CCW==CW will drive the motor, and CCW==CW will brake it
+    DcMotorDriver(const char *aPWMOutput, const char *aCWDirectionOutput = NULL, const char *aCCWDirectionOutput = NULL);
+    virtual ~DcMotorDriver();
 
-    /// set the connection parameters to connect to BANDIT controller
-    /// @param aConnectionSpec serial device path (/dev/...) or host name/address[:port] (1.2.3.4 or xxx.yy)
-    /// @param aDefaultPort default port number for TCP connection (irrelevant for direct serial device connection)
-    void setConnectionSpecification(const char *aConnectionSpec, uint16_t aDefaultPort, const char *aRtsDtrOutput, const char *aCtsDsrDcdInput);
+    /// ramp motor from current power to another power
+    /// @param aPower 0..100 new brake or drive power to apply
+    /// @param aDirection driving direction: 1 = CW, -1 = CCW, 0 = hold/brake
+    /// @param aFullRampTime number of seconds for a full scale (0..100 or vice versa) power change.
+    ///   Note that ramping from one aDirection to another will execute two separate ramps in sequence
+    /// @param aRampExp ramp exponent (1=linear, 2=quadratic, 3=cubic...
+    /// @param aRampDoneCB will be called at end of ramp
+    void rampToPower(double aPower, int aDirection, double aFullRampTime, double aRampExp, DCMotorStatusCB aRampDoneCB = NULL);
 
-
-    /// stop actions, no callback
+    /// stop immediately, no braking
     void stop();
-
-    /// receive data from bandit
-    /// @param aResponseCB will be called after receiving a complete transmission from Bandit, or on error
-    /// @param aEnableHandshake if set, handshake line will be set before starting to receive or waiting for handshake input
-    /// @param aWaitForHandshake if set, receiving will not start before input handshake goes active
-    /// @param aEndOnHandshake if set, receiving ends when input handshake goes inactive
-    void receive(BanditResponseCB aResponseCB, bool aEnableHandshake, bool aWaitForHandshake, bool aEndOnHandshake);
-
-    /// receive data from bandit
-    /// @param aData data to send
-    /// @param aStatusCB will be called after transmission to Bandit is complete, or on error
-    /// @param aEnableHandshake if set, handshake line will be set before sending
-    void send(StatusCB aStatusCB, string aData, bool aEnableHandshake);
 
 
   protected:
@@ -91,12 +84,9 @@ namespace p44 {
 
   private:
 
-    void receiveHandler(ErrorPtr aError);
-    void end(ErrorPtr aError, string aData="");
-    void timeout();
-    void handshakeChanged(bool aNewState);
-    void startReceive();
-    void dataSent(StatusCB aStatusCB);
+    void setPower(double aPower, int aDirection);
+    void setDirection(int aDirection);
+    void rampStep(double aTargetPower, double aPowerStep, MLMicroSeconds aRemainingTime, double aRampExp, DCMotorStatusCB aRampDoneCB);
 
   };
 

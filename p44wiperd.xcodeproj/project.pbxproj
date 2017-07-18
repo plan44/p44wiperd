@@ -39,6 +39,8 @@
 		ED5372D71DFC9FC90066FF5A /* sqlite3pp.cpp in Sources */ = {isa = PBXBuildFile; fileRef = ED5372C91DFC9F650066FF5A /* sqlite3pp.cpp */; };
 		ED5372DA1DFCA0CC0066FF5A /* libsqlite3.tbd in Frameworks */ = {isa = PBXBuildFile; fileRef = ED5372D91DFCA0CC0066FF5A /* libsqlite3.tbd */; };
 		ED5372DD1DFCA1FF0066FF5A /* ledchaincomm.cpp in Sources */ = {isa = PBXBuildFile; fileRef = ED5372DB1DFCA1FF0066FF5A /* ledchaincomm.cpp */; };
+		ED640E281F1E18DE00E5881D /* analogio.cpp in Sources */ = {isa = PBXBuildFile; fileRef = ED640E261F1E18DE00E5881D /* analogio.cpp */; };
+		ED640E2B1F1E19BB00E5881D /* pwm.cpp in Sources */ = {isa = PBXBuildFile; fileRef = ED640E291F1E19BB00E5881D /* pwm.cpp */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -120,6 +122,10 @@
 		ED5372D91DFCA0CC0066FF5A /* libsqlite3.tbd */ = {isa = PBXFileReference; lastKnownFileType = "sourcecode.text-based-dylib-definition"; name = libsqlite3.tbd; path = usr/lib/libsqlite3.tbd; sourceTree = SDKROOT; };
 		ED5372DB1DFCA1FF0066FF5A /* ledchaincomm.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = ledchaincomm.cpp; sourceTree = "<group>"; };
 		ED5372DC1DFCA1FF0066FF5A /* ledchaincomm.hpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.h; path = ledchaincomm.hpp; sourceTree = "<group>"; };
+		ED640E261F1E18DE00E5881D /* analogio.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = analogio.cpp; sourceTree = "<group>"; };
+		ED640E271F1E18DE00E5881D /* analogio.hpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.h; path = analogio.hpp; sourceTree = "<group>"; };
+		ED640E291F1E19BB00E5881D /* pwm.cpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.cpp; path = pwm.cpp; sourceTree = "<group>"; };
+		ED640E2A1F1E19BB00E5881D /* pwm.hpp */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.cpp.h; path = pwm.hpp; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -172,6 +178,8 @@
 				ED53726A1DFC2CBE0066FF5A /* colorutils.hpp */,
 				ED53726B1DFC2CBE0066FF5A /* consolekey.cpp */,
 				ED53726C1DFC2CBE0066FF5A /* consolekey.hpp */,
+				ED640E261F1E18DE00E5881D /* analogio.cpp */,
+				ED640E271F1E18DE00E5881D /* analogio.hpp */,
 				ED53726D1DFC2CBE0066FF5A /* digitalio.cpp */,
 				ED53726E1DFC2CBE0066FF5A /* digitalio.hpp */,
 				ED53726F1DFC2CBE0066FF5A /* error.cpp */,
@@ -181,6 +189,8 @@
 				ED5372731DFC2CBE0066FF5A /* gpio.cpp */,
 				ED5372741DFC2CBE0066FF5A /* gpio.h */,
 				ED5372751DFC2CBE0066FF5A /* gpio.hpp */,
+				ED640E291F1E19BB00E5881D /* pwm.cpp */,
+				ED640E2A1F1E19BB00E5881D /* pwm.hpp */,
 				ED5372761DFC2CBE0066FF5A /* httpcomm.cpp */,
 				ED5372771DFC2CBE0066FF5A /* httpcomm.hpp */,
 				ED5372781DFC2CBE0066FF5A /* i2c.cpp */,
@@ -326,6 +336,7 @@
 				ED53729B1DFC2CBE0066FF5A /* application.cpp in Sources */,
 				ED5372AC1DFC2CBE0066FF5A /* p44obj.cpp in Sources */,
 				ED5372B31DFC2CBE0066FF5A /* utils.cpp in Sources */,
+				ED640E281F1E18DE00E5881D /* analogio.cpp in Sources */,
 				ED5372AB1DFC2CBE0066FF5A /* operationqueue.cpp in Sources */,
 				ED53729C1DFC2CBE0066FF5A /* colorutils.cpp in Sources */,
 				ED53729F1DFC2CBE0066FF5A /* error.cpp in Sources */,
@@ -348,6 +359,7 @@
 				ED5372A31DFC2CBE0066FF5A /* i2c.cpp in Sources */,
 				ED08E15B1F1D0BD900A54C05 /* p44wiperd_main.cpp in Sources */,
 				ED5372A01DFC2CBE0066FF5A /* fdcomm.cpp in Sources */,
+				ED640E2B1F1E19BB00E5881D /* pwm.cpp in Sources */,
 				ED53729D1DFC2CBE0066FF5A /* consolekey.cpp in Sources */,
 				ED53729E1DFC2CBE0066FF5A /* digitalio.cpp in Sources */,
 			);
