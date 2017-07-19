@@ -52,10 +52,22 @@ class P44WiperD : public CmdLineApp
 
   MLMicroSeconds starttime;
 
+  enum {
+    mv_unknown,
+    mv_seek_zero_cw,
+    mv_seek_zero_ccw,
+    mv_seek_zero_more_ccw,
+    mv_zeroed,
+    mv_swinging_cw,
+    mv_swinging_ccw
+  } mvState;
+
+
 public:
 
   P44WiperD() :
-    starttime(MainLoop::now())
+    starttime(MainLoop::now()),
+    mvState(mv_unknown)
   {
   }
 
@@ -83,6 +95,7 @@ public:
       { 0  , "dir",            true,  "int;direction -1,0,1" },
       { 0  , "exp",            true,  "float;exponent for ramp, 1=linear" },
       { 0  , "fullramp",       true,  "float;seconds for full ramp" },
+      { 0  , "runfor",         true,  "float;seconds to keep running after end of ramp" },
       { 'h', "help",           false, "show this text" },
       { 0, NULL } // list terminator
     };
@@ -124,7 +137,7 @@ public:
       zeroPosInput->setInputChangedHandler(boost::bind(&P44WiperD::zeroPosHandler, this, _1), 40*MilliSecond, 0);
 
       // movement detector input
-      movementInput = DigitalIoPtr(new DigitalIo(getOption("movementInput","missing"), false, false));
+      movementInput = DigitalIoPtr(new DigitalIo(getOption("movementinput","missing"), false, false));
       movementInput->setInputChangedHandler(boost::bind(&P44WiperD::movementHandler, this, _1), 0, 0);
 
       // - create and start API server and wait for things to happen
@@ -156,6 +169,7 @@ public:
   {
     // %%% Nop for now
     LOG(LOG_NOTICE, "Zero position signal = %d", aNewState);
+    greenLed->steady(aNewState);
   }
 
 
@@ -163,6 +177,28 @@ public:
   {
     // %%% Nop for now
     LOG(LOG_NOTICE, "Movement signal = %d", aNewState);
+    redLed->steady(aNewState);
+  }
+
+
+
+
+  #define ROTATION_PERIOD_AT_FULL_POWER (1.413*Second) // measured
+
+
+  void findZero()
+  {
+    motorDriver->stop();
+    mvState = mv_seek_zero_cw;
+    // - move at max one quarter to the left
+    
+
+  }
+
+
+  void findTimeout()
+  {
+
   }
 
 
@@ -204,11 +240,22 @@ public:
     if (Error::isOK(aError)) {
       // print data to stdout
       LOG(LOG_NOTICE, "Ramp complete, power=%.2f%%, direction=%d", aCurrentPower, aDirection);
+      // keep running
+      MLMicroSeconds runfor = 0;
+      string s;
+      if (getStringOption("runfor",s)) {
+        double sec;
+        if (sscanf(s.c_str(),"%lf", &sec)==1) {
+          runfor = (double)sec*Second;
+        }
+      }
+      // delay quit
+      MainLoop::currentMainLoop().executeOnce(boost::bind(&Application::terminateApp, this, 0), runfor);
     }
     else {
       LOG(LOG_ERR, "Error receiving data: %s", aError->description().c_str());
+      terminateAppWith(aError);
     }
-    terminateAppWith(aError);
   }
 
 
