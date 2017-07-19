@@ -63,7 +63,10 @@ void DcMotorDriver::setDirection(int aDirection)
       ccwDirectionOutput->set(aDirection<0);
     }
   }
-  currentDirection = aDirection;
+  if (aDirection!=currentDirection) {
+    LOG(LOG_DEBUG, "Direction changed to %d", aDirection);
+    currentDirection = aDirection;
+  }
 }
 
 
@@ -88,7 +91,10 @@ void DcMotorDriver::setPower(double aPower, int aDirection)
     setDirection(aDirection);
     pwmOutput->setValue(aPower);
   }
-  currentPower = aPower;
+  if (aPower!=currentPower) {
+    LOG(LOG_DEBUG, "Power changed to %.2f%%", aPower);
+    currentPower = aPower;
+  }
 }
 
 
@@ -118,6 +124,7 @@ void DcMotorDriver::rampToPower(double aPower, int aDirection, double aFullRampT
   if (aDirection!=currentDirection) {
     if (currentPower!=0) {
       // ramp to zero first, then ramp up to new direction
+      LOG(LOG_DEBUG, "Ramp trough different direction modes -> first ramp power down, then up again");
       rampToPower(0, currentDirection, aFullRampTime, aRampExp, boost::bind(&DcMotorDriver::rampToPower, this, aPower, aDirection, aFullRampTime, aRampExp, aRampDoneCB));
       return;
     }
@@ -134,6 +141,7 @@ void DcMotorDriver::rampToPower(double aPower, int aDirection, double aFullRampT
   if (totalRampTime>0) {
     powerStep = rampRange*RAMP_STEP_TIME/totalRampTime;
   }
+  LOG(LOG_DEBUG, "Ramp power from %.2f%% to %.2f%% in %.3f Seconds, power step %.3f", currentPower, aPower, (double)totalRampTime/Second, powerStep);
   // now execute the ramp
   rampStep(aPower, powerStep, totalRampTime, aRampExp, aRampDoneCB);
 }
@@ -142,9 +150,11 @@ void DcMotorDriver::rampToPower(double aPower, int aDirection, double aFullRampT
 
 void DcMotorDriver::rampStep(double aTargetPower, double aPowerStep, MLMicroSeconds aRemainingTime, double aRampExp, DCMotorStatusCB aRampDoneCB)
 {
+  LOG(LOG_DEBUG, "ramp step, remaining time= %lld uS", aRemainingTime);
   if (aRemainingTime<RAMP_STEP_TIME) {
     // finalize
     setPower(powerToOut(aTargetPower, aRampExp), currentDirection);
+    LOG(LOG_DEBUG, "end of ramp");
     // call back
     if (aRampDoneCB) aRampDoneCB(currentPower, currentDirection, ErrorPtr());
   }
