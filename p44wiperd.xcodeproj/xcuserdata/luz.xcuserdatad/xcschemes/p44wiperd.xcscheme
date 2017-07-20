@@ -91,6 +91,10 @@
             isEnabled = "NO">
          </CommandLineArgument>
          <CommandLineArgument
+            argument = "--calibrate"
+            isEnabled = "NO">
+         </CommandLineArgument>
+         <CommandLineArgument
             argument = "--initialpower 100"
             isEnabled = "YES">
          </CommandLineArgument>

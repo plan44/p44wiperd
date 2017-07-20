@@ -34,7 +34,7 @@ using namespace p44;
 DcMotorDriver::DcMotorDriver(const char *aPWMOutput, const char *aCWDirectionOutput, const char *aCCWDirectionOutput) :
   currentPower(0),
   currentDirection(0),
-  rampTicket(0)
+  sequenceTicket(0)
 {
   pwmOutput = AnalogIoPtr(new AnalogIo(aPWMOutput, true, 0)); // off to begin with
   if (aCWDirectionOutput) {
@@ -98,20 +98,26 @@ void DcMotorDriver::setPower(double aPower, int aDirection)
 }
 
 
-#define RAMP_STEP_TIME (50*MilliSecond)
+#define RAMP_STEP_TIME (20*MilliSecond)
 
 
 void DcMotorDriver::stop()
 {
-  MainLoop::currentMainLoop().cancelExecutionTicket(rampTicket);
+  stopSequences();
   setPower(0, 0);
+}
+
+
+void DcMotorDriver::stopSequences()
+{
+  MainLoop::currentMainLoop().cancelExecutionTicket(sequenceTicket);
 }
 
 
 
 static double powerToOut(double aPower, double aExp)
 {
-  if (aExp==1) return aPower;
+  if (aExp==0) return aPower;
   return 100*((exp(aPower*aExp/100)-1)/(exp(aExp)-1));
 }
 
@@ -120,7 +126,8 @@ static double powerToOut(double aPower, double aExp)
 
 void DcMotorDriver::rampToPower(double aPower, int aDirection, double aFullRampTime, double aRampExp, DCMotorStatusCB aRampDoneCB)
 {
-  MainLoop::currentMainLoop().cancelExecutionTicket(rampTicket);
+  LOG(LOG_DEBUG, "+++ new ramp: power: %.2f%%..%.2f%%, direction:%d..%d with full ramp time %.3f Seconds", currentPower, aPower, currentDirection, aDirection, aFullRampTime);
+  MainLoop::currentMainLoop().cancelExecutionTicket(sequenceTicket);
   if (aDirection!=currentDirection) {
     if (currentPower!=0) {
       // ramp to zero first, then ramp up to new direction
@@ -154,7 +161,7 @@ void DcMotorDriver::rampStep(double aTargetPower, double aPowerStep, MLMicroSeco
   if (aRemainingTime<RAMP_STEP_TIME) {
     // finalize
     setPower(powerToOut(aTargetPower, aRampExp), currentDirection);
-    LOG(LOG_DEBUG, "end of ramp");
+    LOG(LOG_DEBUG, "--- end of ramp");
     // call back
     if (aRampDoneCB) aRampDoneCB(currentPower, currentDirection, ErrorPtr());
   }
@@ -162,14 +169,47 @@ void DcMotorDriver::rampStep(double aTargetPower, double aPowerStep, MLMicroSeco
     // set power for this step
     setPower(powerToOut(currentPower+aPowerStep, aRampExp), currentDirection);
     // schedule next step
-    rampTicket = MainLoop::currentMainLoop().executeOnce(boost::bind(&DcMotorDriver::rampStep, this, aTargetPower, aPowerStep, aRemainingTime-RAMP_STEP_TIME, aRampExp, aRampDoneCB), RAMP_STEP_TIME);
+    sequenceTicket = MainLoop::currentMainLoop().executeOnce(boost::bind(&DcMotorDriver::rampStep, this, aTargetPower, aPowerStep, aRemainingTime-RAMP_STEP_TIME, aRampExp, aRampDoneCB), RAMP_STEP_TIME);
   }
 }
 
 
+void DcMotorDriver::runSequence(SequenceStepList aSteps, DCMotorStatusCB aSequenceDoneCB)
+{
+  stopSequences();
+  if (aSteps.size()==0) {
+    // done
+    if (aSequenceDoneCB) aSequenceDoneCB(currentPower, currentDirection, ErrorPtr());
+  }
+  // next step
+  SequenceStep step = aSteps.front();
+  rampToPower(step.power, step.direction, step.rampTime, step.rampExp, boost::bind(&DcMotorDriver::sequenceStepDone, this, aSteps, aSequenceDoneCB, _3));
+}
 
 
+void DcMotorDriver::sequenceStepDone(SequenceStepList aSteps, DCMotorStatusCB aSequenceDoneCB, ErrorPtr aError)
+{
+  if (!Error::isOK(aError)) {
+    // error, abort sequence
+    if (aSequenceDoneCB) aSequenceDoneCB(currentPower, currentDirection, aError);
+    return;
+  }
+  // launch next step after given run time
+  SequenceStep step = aSteps.front();
+  aSteps.pop_front();
+  MainLoop::currentMainLoop().executeTicketOnce(sequenceTicket, boost::bind(&DcMotorDriver::runSequence, this, aSteps, aSequenceDoneCB), step.runTime*Second);
+}
 
+
+//void DcMotorDriver::runConstSequence(const SequenceStep aSteps[], DCMotorStatusCB aSequenceDoneCB)
+//{
+//  SequenceStepList steps;
+//  while (aSteps && aSteps->power>0) {
+//    steps.push_back(*aSteps);
+//    aSteps++;
+//  }
+//  runSequence(steps, aSequenceDoneCB);
+//}
 
 
 

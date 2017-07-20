@@ -51,7 +51,7 @@ namespace p44 {
     int currentDirection;
     double currentPower;
 
-    long rampTicket;
+    long sequenceTicket;
 
   public:
 
@@ -71,12 +71,40 @@ namespace p44 {
     /// @param aDirection driving direction: 1 = CW, -1 = CCW, 0 = hold/brake
     /// @param aFullRampTime number of seconds for a full scale (0..100 or vice versa) power change.
     ///   Note that ramping from one aDirection to another will execute two separate ramps in sequence
-    /// @param aRampExp ramp exponent (1=linear, 2=quadratic, 3=cubic...
+    /// @param aRampExp ramp exponent (0=linear, + or - = logarithmic bulging up or down)
     /// @param aRampDoneCB will be called at end of ramp
-    void rampToPower(double aPower, int aDirection, double aFullRampTime, double aRampExp, DCMotorStatusCB aRampDoneCB = NULL);
+    void rampToPower(double aPower, int aDirection, double aFullRampTime = 0, double aRampExp = 0, DCMotorStatusCB aRampDoneCB = NULL);
 
     /// stop immediately, no braking
     void stop();
+
+    /// stop ramps and sequences, but do not turn off motor
+    void stopSequences();
+
+
+    /// run sequence
+    typedef struct {
+      double power; ///< power to ramp to, negative = step list terminator
+      int direction; ///< new direction
+      double rampTime; ///< ramp speed
+      double rampExp; ///< ramp exponent (0=linear, + or - = logarithmic bulging up or down)
+      double runTime; ///< time to run
+    } SequenceStep;
+
+    typedef std::list<SequenceStep> SequenceStepList;
+
+    /// ramp motor from current power to another power
+    /// @param aSteps list of sequence steps, last one must have power<0 to terminate the list
+    /// @param aSequenceDoneCB will be called at end of ramp
+    void runSequence(SequenceStepList aSteps, DCMotorStatusCB aSequenceDoneCB = NULL);
+
+//    /// ramp motor from current power to another power
+//    /// @param aSteps list of sequence steps, last one must have power<0 to terminate the list
+//    /// @param aSequenceDoneCB will be called at end of ramp
+//    void runConstSequence(const SequenceStep aSteps[], DCMotorStatusCB aSequenceDoneCB = NULL);
+
+
+    
 
 
   protected:
@@ -87,6 +115,9 @@ namespace p44 {
     void setPower(double aPower, int aDirection);
     void setDirection(int aDirection);
     void rampStep(double aTargetPower, double aPowerStep, MLMicroSeconds aRemainingTime, double aRampExp, DCMotorStatusCB aRampDoneCB);
+    void sequenceStepDone(SequenceStepList aSteps, DCMotorStatusCB aSequenceDoneCB, ErrorPtr aError);
+
+
 
   };
 
