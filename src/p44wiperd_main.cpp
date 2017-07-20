@@ -63,6 +63,7 @@ typedef struct {
   double swingPeriod; ///< swing period [seconds]
   double swingCurveExp; ///< swing power curve exponent, -1.85 is near sine wave
   double midPointAdjustTime; ///< midpoint adjust ramp time [Seconds]
+  double midPointSearchTime; ///< max time waiting for midpoint after swingdown ramp [Seconds]
 } WiperSettings;
 
 
@@ -131,6 +132,14 @@ static const SettingsFieldDef settingsFieldDefs[] = {
     .min = 0,
     .max = 1,
   },
+  {
+    .fieldName = "midPointSearchTime",
+    .title =  "Max time waiting for midpoint after swingdown ramp, 0=forever [Seconds]",
+    .jsonType = json_type_double,
+    .offset = OFFS(midPointSearchTime),
+    .min = 0,
+    .max = 1,
+  },
 };
 
 static int numSettingsFields = sizeof(settingsFieldDefs)/sizeof(SettingsFieldDef);
@@ -172,6 +181,10 @@ protected:
 };
 
 
+// MARK: ===== Application
+
+
+typedef boost::function<void (JsonObjectPtr aResponse, ErrorPtr aError)> RequestDoneCB;
 
 
 /// Main program for plan44.ch P44-DSB-DEH in form of the "vdcd" daemon)
@@ -201,6 +214,7 @@ class P44WiperD : public CmdLineApp, public PersistentParams
 
   MLMicroSeconds starttime;
   MLMicroSeconds lastZeroPosTime;
+  long midPointSimTicket;
   long opTicket;
   StatusCB opDoneCB;
 
@@ -226,6 +240,7 @@ public:
     starttime(MainLoop::now()),
     mvState(mv_unknown),
     opTicket(0),
+    midPointSimTicket(0),
     lastZeroPosTime(Never)
   {
     // default settings
@@ -237,6 +252,7 @@ public:
     settings.swingMaxPower = 80; // moderate
     settings.swingPeriod = 1.5; // one swing time
     settings.midPointAdjustTime = 0.3; // midpoint max adjust time
+    settings.midPointSearchTime = 1; // not too long
   }
 
 
@@ -309,7 +325,7 @@ public:
 
       // - create button input
       button = ButtonInputPtr(new ButtonInput(getOption("button","missing")));
-      button->setButtonHandler(boost::bind(&P44WiperD::buttonHandler, this, _1, _2, _3), true, true);
+      button->setButtonHandler(boost::bind(&P44WiperD::buttonHandler, this, _1, _2, _3), true, Second);
       // - create LEDs
       greenLed = IndicatorOutputPtr(new IndicatorOutput(getOption("greenled","missing")));
       redLed = IndicatorOutputPtr(new IndicatorOutput(getOption("redled","missing")));
@@ -413,7 +429,8 @@ public:
   void zeroed(ErrorPtr aError)
   {
     if (!Error::isOK(aError)) {
-      terminateAppWith(aError);
+      LOG(LOG_ERR, "%s, use button to try again", aError->description().c_str());
+      return;
     }
     LOG(LOG_NOTICE, "Start swinging now");
     startSwing();
@@ -447,9 +464,13 @@ public:
 
   void buttonHandler(bool aState, bool aHasChanged, MLMicroSeconds aTimeSincePreviousChange)
   {
-    // %%% Nop for now
-    if (aHasChanged && aState) {
-      motorDriver->stop();
+    if (aHasChanged && !aState && aTimeSincePreviousChange>5*Second) {
+      // pressed more than 5 seconds
+      calibrate(NULL);
+    }
+    else if (aHasChanged && !aState) {
+      // back to normal operation
+      motorDriver->rampToPower(0, 0, 0.5*Second, 0, boost::bind(&P44WiperD::normalOperation, this));
     }
   }
 
@@ -646,11 +667,15 @@ public:
   void swingAccelerated()
   {
     LOG(LOG_INFO,"Swing accelerated to max, waiting for midpoint");
+    if (settings.midPointSearchTime) {
+      MainLoop::currentMainLoop().executeTicketOnce(midPointSimTicket, boost::bind(&P44WiperD::swingMidpoint, this), settings.midPointSearchTime);
+    }
   }
 
 
   void swingMidpoint()
   {
+    MainLoop::currentMainLoop().cancelExecutionTicket(midPointSimTicket);
     mvState = mv_swing_after_zero;
     // quickly set midpoint speed
     motorDriver->rampToPower(settings.swingMaxPower, swingDirection, settings.midPointAdjustTime, 0, boost::bind(&P44WiperD::swingDecelerate, this));
@@ -661,7 +686,7 @@ public:
   {
     // assuming midpoint at full speed
     // - ramp power down twoards endpoint
-    motorDriver->rampToPower(0, swingDirection, settings.swingPeriod/2, settings.swingCurveExp, boost::bind(&P44WiperD::swingDecelerated, this));
+    motorDriver->rampToPower(0, swingDirection, settings.swingPeriod/2, -settings.swingCurveExp, boost::bind(&P44WiperD::swingDecelerated, this));
   }
 
 
@@ -698,34 +723,22 @@ public:
         string uri;
         o = aRequest->get("uri");
         if (o) uri = o->stringValue();
-//        JsonObjectPtr data;
-//        bool upload = false;
-//        bool action = (method!="GET");
-//        // check for uploads
-//        string uploadedfile;
-//        if (aRequest->get("uploadedfile", o)) {
-//          uploadedfile = o->stringValue();
-//          upload = true;
-//          action = false; // other params are in the URI, not the POSTed upload
-//        }
-//        if (action) {
-//          // JSON data is in the request
-//          data = aRequest->get("data");
-//        }
-//        else {
-//          // URI params is the JSON to process
-//          data = aRequest->get("uri_params");
-//          if (data) action = true; // GET, but with query_params: treat like PUT/POST with data
-//          if (upload) {
-//            // move that into the request
-//            data->add("uploadedfile", JsonObject::newString(uploadedfile));
-//          }
-//        }
-//        // request elements now: uri and data
-//        if (processRequest(uri, data, action, boost::bind(&PixelBoardD::requestHandled, this, aConnection, _1, _2))) {
-//          // done, callback will send response and close connection
-//          return;
-//        }
+        JsonObjectPtr data;
+        bool action = (method!="GET");
+        if (action) {
+          // JSON data is in the request
+          data = aRequest->get("data");
+        }
+        else {
+          // URI params is the JSON to process
+          data = aRequest->get("uri_params");
+          if (data) action = true; // GET, but with query_params: treat like PUT/POST with data
+        }
+        // request elements now: uri and data
+        if (processRequest(uri, data, action, boost::bind(&P44WiperD::requestHandled, this, aConnection, _1, _2))) {
+          // done, callback will send response and close connection
+          return;
+        }
         // request cannot be processed, return error
         LOG(LOG_ERR,"Invalid JSON request");
         aError = WebError::webErr(404, "No handler found for request to %s", uri.c_str());
@@ -754,89 +767,95 @@ public:
   }
 
 
-//  bool processRequest(string aUri, JsonObjectPtr aData, bool aIsAction, RequestDoneCB aRequestDoneCB)
-//  {
-//    ErrorPtr err;
-//    JsonObjectPtr o;
-//    if (aUri=="player1" || aUri=="player2") {
-//      int side = aUri=="player2" ? 1 : 0;
-//      if (aIsAction) {
-//        if (aData->get("key", o)) {
-//          string key = o->stringValue();
-//          // Note: assume keys are already released when event is reported
-//          if (key=="left")
-//            keyHandler(side, keycode_left, keycode_none);
-//          else if (key=="right")
-//            keyHandler(side, keycode_right, keycode_none);
-//          else if (key=="turn")
-//            keyHandler(side, keycode_middleleft, keycode_none);
-//          else if (key=="drop")
-//            keyHandler(side, keycode_middleright, keycode_none);
-//        }
-//      }
-//      aRequestDoneCB(JsonObjectPtr(), ErrorPtr());
-//      return true;
-//    }
-//    else if (aUri=="board") {
-//      if (aIsAction) {
-//        PageMode mode = pagemode_controls1; // default to bottom controls
-//        if (aData->get("mode", o))
-//          mode = o->int32Value();
-//        if (aData->get("page", o)) {
-//          string page = o->stringValue();
-//          gotoPage(page, mode);
-//        }
-//      }
-//      aRequestDoneCB(JsonObjectPtr(), ErrorPtr());
-//      return true;
-//    }
-//    else if (aUri=="page") {
-//      // ask each page
-//      for (PagesMap::iterator pos = pages.begin(); pos!=pages.end(); ++pos) {
-//        if (pos->second->handleRequest(aData, aRequestDoneCB)) {
-//          // request will be handled by this page, done for now
-//          return true;
-//        }
-//      }
-//    }
-//    else if (aUri=="/") {
-//      string uploadedfile;
-//      string cmd;
-//      if (aData->get("uploadedfile", o))
-//        uploadedfile = o->stringValue();
-//      if (aData->get("cmd", o))
-//        cmd = o->stringValue();
-//      if (cmd=="imageupload" && displayPage) {
-//        ErrorPtr err = displayPage->loadPNGBackground(uploadedfile);
-//        gotoPage("display", false);
-//        updateDisplay();
-//        aRequestDoneCB(JsonObjectPtr(), err);
-//        return true;
-//      }
-//    }
-//    return false;
-//  }
-//
-//
-//  ErrorPtr processUpload(string aUri, JsonObjectPtr aData, const string aUploadedFile)
-//  {
-//    ErrorPtr err;
-//
-//    string cmd;
-//    JsonObjectPtr o;
-//    if (aData->get("cmd", o)) {
-//      cmd = o->stringValue();
-//      if (cmd=="imageupload") {
-//        displayPage->loadPNGBackground(aUploadedFile);
-//        gotoPage("display", false);
-//        updateDisplay();
-//      }
-//      else {
-//        err = WebError::webErr(500, "Unknown upload cmd '%s'", cmd.c_str());
-//      }
-//    }
-//    return err;
-//  }
+  JsonObjectPtr fieldAsJSON(const SettingsFieldDef &aFdef)
+  {
+    JsonObjectPtr val;
+    switch (aFdef.jsonType) {
+      case json_type_boolean: val = JsonObject::newBool(FLD(bool, aFdef.offset)); break;
+      case json_type_double: val = JsonObject::newDouble(FLD(double, aFdef.offset)); break;
+      case json_type_int: val = JsonObject::newInt64(FLD(int, aFdef.offset)); break;
+      case json_type_string: val = val = JsonObject::newString(FLD(string, aFdef.offset)); break;
+      default: val = JsonObject::newNull(); break;
+    }
+    return val;
+  }
+
+
+  void JSONtoField(const SettingsFieldDef &aFdef, JsonObjectPtr aValue)
+  {
+    switch (aFdef.jsonType) {
+      case json_type_boolean: FLD(bool, aFdef.offset) = aValue->boolValue(); break;
+      case json_type_double: FLD(double, aFdef.offset) = aValue->doubleValue(); break;
+      case json_type_int: FLD(int, aFdef.offset) = aValue->int32Value(); break;
+      case json_type_string: FLD(string, aFdef.offset) = aValue->stringValue(); break;
+      default: break;
+    }
+  }
+
+
+  bool processRequest(string aUri, JsonObjectPtr aData, bool aIsAction, RequestDoneCB aRequestDoneCB)
+  {
+    ErrorPtr err;
+    JsonObjectPtr o;
+    JsonObjectPtr res;
+    if (aUri=="settings") {
+      // access settings
+      string fieldName;
+      if (aData->get("field", o)) {
+        fieldName = o->stringValue();
+        // single field access
+        for (int i=0; i<numSettingsFields; i++) {
+          const SettingsFieldDef &fdef = settingsFieldDefs[i];
+          if (fieldName==fdef.fieldName) {
+            if (aData->get("value", o)) {
+              // write
+              JSONtoField(fdef, o);
+              markDirty();
+              save();
+            }
+            else {
+              // read
+              res = fieldAsJSON(fdef);
+            }
+            break;
+          }
+        }
+      }
+      else {
+        // return all fields
+        res = JsonObject::newObj();
+        for (int i=0; i<numSettingsFields; i++) {
+          const SettingsFieldDef &fdef = settingsFieldDefs[i];
+          JsonObjectPtr fld = JsonObject::newObj();
+          fld->add("title", JsonObject::newString(fdef.title));
+          if (fdef.jsonType==json_type_double) {
+            fld->add("min", JsonObject::newDouble(fdef.min));
+            fld->add("max", JsonObject::newDouble(fdef.max));
+          }
+          else if (fdef.jsonType==json_type_int) {
+            fld->add("min", JsonObject::newInt64(fdef.min));
+            fld->add("max", JsonObject::newInt64(fdef.max));
+          }
+          fld->add("value", fieldAsJSON(fdef));
+          res->add(fdef.fieldName, fld);
+        }
+      }
+      aRequestDoneCB(res, ErrorPtr());
+      return true;
+    }
+    else if (aIsAction && aUri=="calibrate") {
+      calibrate(boost::bind(&P44WiperD::actionDone, this, aRequestDoneCB));
+      return true;
+    }
+    // cannot process request
+    return false;
+  }
+
+
+  void actionDone(RequestDoneCB aRequestDoneCB)
+  {
+    aRequestDoneCB(JsonObjectPtr(), ErrorPtr());
+  }
 
 
 
