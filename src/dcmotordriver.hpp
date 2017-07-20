@@ -114,7 +114,7 @@ namespace p44 {
 
     void setPower(double aPower, int aDirection);
     void setDirection(int aDirection);
-    void rampStep(double aTargetPower, double aPowerStep, MLMicroSeconds aRemainingTime, double aRampExp, DCMotorStatusCB aRampDoneCB);
+    void rampStep(double aStartPower, double aTargetPower, int aNumSteps, int aStepNo , double aRampExp, DCMotorStatusCB aRampDoneCB);
     void sequenceStepDone(SequenceStepList aSteps, DCMotorStatusCB aSequenceDoneCB, ErrorPtr aError);
 
 

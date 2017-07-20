@@ -115,18 +115,9 @@ void DcMotorDriver::stopSequences()
 
 
 
-static double powerToOut(double aPower, double aExp)
-{
-  if (aExp==0) return aPower;
-  return 100*((exp(aPower*aExp/100)-1)/(exp(aExp)-1));
-}
-
-
-
-
 void DcMotorDriver::rampToPower(double aPower, int aDirection, double aFullRampTime, double aRampExp, DCMotorStatusCB aRampDoneCB)
 {
-  LOG(LOG_DEBUG, "+++ new ramp: power: %.2f%%..%.2f%%, direction:%d..%d with full ramp time %.3f Seconds", currentPower, aPower, currentDirection, aDirection, aFullRampTime);
+  LOG(LOG_DEBUG, "+++ new ramp: power: %.2f%%..%.2f%%, direction:%d..%d with full ramp time %.3f Seconds, exp=%.2f", currentPower, aPower, currentDirection, aDirection, aFullRampTime, aRampExp);
   MainLoop::currentMainLoop().cancelExecutionTicket(sequenceTicket);
   if (aDirection!=currentDirection) {
     if (currentPower!=0) {
@@ -144,32 +135,39 @@ void DcMotorDriver::rampToPower(double aPower, int aDirection, double aFullRampT
   // ramp to new value
   double rampRange = aPower-currentPower;
   MLMicroSeconds totalRampTime = fabs(rampRange)/100*aFullRampTime*Second;
-  double powerStep = rampRange;
-  if (totalRampTime>0) {
-    powerStep = rampRange*RAMP_STEP_TIME/totalRampTime;
-  }
-  LOG(LOG_DEBUG, "Ramp power from %.2f%% to %.2f%% in %.3f Seconds, power step %.3f", currentPower, aPower, (double)totalRampTime/Second, powerStep);
+  int numSteps = (int)(totalRampTime/RAMP_STEP_TIME)+1;
+  LOG(LOG_DEBUG, "Ramp power from %.2f%% to %.2f%% in %lld uS (%d steps)", currentPower, aPower, totalRampTime, numSteps);
   // now execute the ramp
-  rampStep(aPower, powerStep, totalRampTime, aRampExp, aRampDoneCB);
+  rampStep(currentPower, aPower, numSteps, 0, aRampExp, aRampDoneCB);
 }
 
 
 
-void DcMotorDriver::rampStep(double aTargetPower, double aPowerStep, MLMicroSeconds aRemainingTime, double aRampExp, DCMotorStatusCB aRampDoneCB)
+void DcMotorDriver::rampStep(double aStartPower, double aTargetPower, int aNumSteps, int aStepNo , double aRampExp, DCMotorStatusCB aRampDoneCB)
 {
-  LOG(LOG_DEBUG, "ramp step, remaining time= %lld uS", aRemainingTime);
-  if (aRemainingTime<RAMP_STEP_TIME) {
+  LOG(LOG_DEBUG, "ramp step #%d/%d, %d%% of ramp", aStepNo, aNumSteps, aStepNo*100/aNumSteps);
+  if (aStepNo++>=aNumSteps) {
     // finalize
-    setPower(powerToOut(aTargetPower, aRampExp), currentDirection);
+    setPower(aTargetPower, currentDirection);
     LOG(LOG_DEBUG, "--- end of ramp");
     // call back
     if (aRampDoneCB) aRampDoneCB(currentPower, currentDirection, ErrorPtr());
   }
   else {
     // set power for this step
-    setPower(powerToOut(currentPower+aPowerStep, aRampExp), currentDirection);
+    double f = (double)aStepNo/aNumSteps;
+    if (aRampExp!=0) {
+      f = (exp(f*aRampExp)-1)/(exp(aRampExp)-1);
+    }
+    // - scale the power
+    double pwr = aStartPower + (aTargetPower-aStartPower)*f;
+    LOG(LOG_DEBUG, "- f=%.3f, pwr=%.2f", f, pwr);
+    setPower(pwr, currentDirection);
     // schedule next step
-    sequenceTicket = MainLoop::currentMainLoop().executeOnce(boost::bind(&DcMotorDriver::rampStep, this, aTargetPower, aPowerStep, aRemainingTime-RAMP_STEP_TIME, aRampExp, aRampDoneCB), RAMP_STEP_TIME);
+    sequenceTicket = MainLoop::currentMainLoop().executeOnce(boost::bind(
+      &DcMotorDriver::rampStep, this, aStartPower, aTargetPower, aNumSteps, aStepNo, aRampExp, aRampDoneCB),
+      RAMP_STEP_TIME
+    );
   }
 }
 
