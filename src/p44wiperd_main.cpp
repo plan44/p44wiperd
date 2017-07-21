@@ -55,6 +55,7 @@ typedef struct {
 #define FLD(ty,offs) (*((ty*)(((char *)&settings)+offs)))
 
 typedef struct {
+  int initialMode; ///< initial run mode
   double calibratePower; ///< calibration power [%]
   double calibrateRotationTime; ///< time a full rotation takes at calibration power [Seconds]
   double rezeroSwingAngle; ///< max rezero swing from initial position [degrees]
@@ -68,6 +69,14 @@ typedef struct {
 
 
 static const SettingsFieldDef settingsFieldDefs[] = {
+  {
+    .fieldName = "initialMode",
+    .title =  "Initial mode after startup: 0=off, 1=auto, 2=on",
+    .jsonType = json_type_int,
+    .offset = OFFS(initialMode),
+    .min = 0,
+    .max = 2,
+  },
   {
     .fieldName = "calibratePower",
     .title =  "Motor power for calibration runs [%]",
@@ -233,26 +242,28 @@ class P44WiperD : public CmdLineApp, public PersistentParams
   int swingDirection;
 
 
+  typedef enum {
+    run_off,
+    run_auto,
+    run_always
+  } RunMode;
+  RunMode runMode;
+
+
+
 public:
 
   P44WiperD() :
     inheritedParams(settingsStore),
     starttime(MainLoop::now()),
     mvState(mv_unknown),
+    runMode(run_off),
     opTicket(0),
     midPointSimTicket(0),
     lastZeroPosTime(Never)
   {
     // default settings
-    settings.calibrateRotationTime = 1.413; // measured
-    settings.calibratePower = 80; // moderate speed
-    settings.rezeroSwingAngle = 90; // half circle max
-    settings.findZeroRamp = 0.1; // not too sudden start+stop
-    settings.swingCurveExp = -1.85; // near sine
-    settings.swingMaxPower = 80; // moderate
-    settings.swingPeriod = 1.5; // one swing time
-    settings.midPointAdjustTime = 0.3; // midpoint max adjust time
-    settings.midPointSearchTime = 1; // not too long
+    default_settings();
   }
 
 
@@ -276,6 +287,7 @@ public:
       { 0  , "greenled",       true,  "output pinspec; green device LED" },
       { 0  , "redled",         true,  "output pinspec; red device LED" },
       { 0  , "calibrate",      false, "measure one rotation at full speed and adjust setting" },
+      // experimental
       { 0  , "power",          true,  "float;end-of-rampp power, 0..100" },
       { 0  , "initialpower",   true,  "float;initial power, 0..100" },
       { 0  , "initialdir",     true,  "int;initial direction -1,0,1" },
@@ -313,7 +325,7 @@ public:
       ErrorPtr err = settingsStore.connectAndInitialize(settingsdb.c_str(), WIPERPARAMS_SCHEMA_VERSION, WIPERPARAMS_SCHEMA_MIN_VERSION, false);
       if (Error::isOK(err)) {
         // load the settings
-        err = loadFromStore(NULL);
+        err = load();
       }
       if (!Error::isOK(err)) {
         err->prefixMessage("Cannot load persistent settings: ");
@@ -360,11 +372,28 @@ public:
   }
 
 
+  void default_settings()
+  {
+    settings.initialMode = 0; // off
+    settings.calibrateRotationTime = 1.413; // measured
+    settings.calibratePower = 80; // moderate speed
+    settings.rezeroSwingAngle = 90; // half circle max
+    settings.findZeroRamp = 0.1; // not too sudden start+stop
+    settings.swingCurveExp = -1.85; // near sine
+    settings.swingMaxPower = 80; // moderate
+    settings.swingPeriod = 1.5; // one swing time
+    settings.midPointAdjustTime = 0.3; // midpoint max adjust time
+    settings.midPointSearchTime = 1; // not too long
+  }
+
+
 
   virtual void initialize()
   {
     // execute command line actions, if any
     if (!execCommandLineActions()) {
+      // get initial mode
+      runMode = (RunMode)settings.initialMode;
       // normal operation
       normalOperation();
     }
@@ -374,7 +403,6 @@ public:
 
   virtual void cleanup(int aExitCode)
   {
-    save();
   }
 
 
@@ -415,6 +443,23 @@ public:
       return true;
     }
     return false; // no command line action
+  }
+
+
+  void setMode(RunMode aRunMode)
+  {
+    if (runMode!=aRunMode) {
+      LOG(LOG_NOTICE, "Changing run mode from %d to %d", runMode, aRunMode);
+      if (runMode==run_off && aRunMode==run_always) {
+        // start now
+        startSwing();
+      }
+      else if (runMode>=run_auto && aRunMode==run_off) {
+        // stop swing
+        stopSwing();
+      }
+      runMode = aRunMode;
+    }
   }
 
 
@@ -558,6 +603,7 @@ public:
   {
     // smoothly start turning
     startOp(aDoneCB);
+    motorDriver->stop();
     mvState = mv_busy;
     motorDriver->rampToPower(settings.calibratePower, 1, 1, 0, boost::bind(&P44WiperD::calibrateUpToSpeed, this));
   }
@@ -651,6 +697,8 @@ public:
     if (zeroPosInput->isSet()) {
       mvState = mv_zeroed;
     }
+    MainLoop::currentMainLoop().cancelExecutionTicket(midPointSimTicket);
+    motorDriver->stop();
   }
 
 
@@ -785,8 +833,20 @@ public:
   {
     switch (aFdef.jsonType) {
       case json_type_boolean: FLD(bool, aFdef.offset) = aValue->boolValue(); break;
-      case json_type_double: FLD(double, aFdef.offset) = aValue->doubleValue(); break;
-      case json_type_int: FLD(int, aFdef.offset) = aValue->int32Value(); break;
+      case json_type_double: {
+        double v = aValue->doubleValue();
+        if (v>aFdef.max) v = aFdef.max;
+        else if (v<aFdef.min) v = aFdef.min;
+        FLD(double, aFdef.offset) = v;
+        break;
+      }
+      case json_type_int: {
+        int v = aValue->int32Value();
+        if (v>aFdef.max) v = aFdef.max;
+        else if (v<aFdef.min) v = aFdef.min;
+        FLD(int, aFdef.offset) = v;
+        break;
+      }
       case json_type_string: FLD(string, aFdef.offset) = aValue->stringValue(); break;
       default: break;
     }
@@ -801,7 +861,23 @@ public:
     if (aUri=="settings") {
       // access settings
       string fieldName;
-      if (aData->get("field", o)) {
+      if (aIsAction && aData->get("action", o)) {
+        // settings actions
+        string a = o->stringValue();
+        if (a=="save") {
+          save();
+        }
+        else if (a=="reload") {
+          load();
+          markDirty(); // potentially changed
+        }
+        else if (a=="defaults") {
+          default_settings();
+          markDirty(); // potentially changed
+        }
+        actionDone(aRequestDoneCB);
+      }
+      else if (aData->get("field", o)) {
         fieldName = o->stringValue();
         // single field access
         for (int i=0; i<numSettingsFields; i++) {
@@ -811,7 +887,6 @@ public:
               // write
               JSONtoField(fdef, o);
               markDirty();
-              save();
             }
             else {
               // read
@@ -843,9 +918,43 @@ public:
       aRequestDoneCB(res, ErrorPtr());
       return true;
     }
-    else if (aIsAction && aUri=="calibrate") {
-      calibrate(boost::bind(&P44WiperD::actionDone, this, aRequestDoneCB));
+    else if (aIsAction && aUri=="log") {
+      if (aData->get("level", o)) {
+        int lvl = o->int32Value();
+        LOG(LOG_NOTICE, "\n====== Changed Log Level from %d to %d\n", LOGLEVEL, lvl);
+        SETLOGLEVEL(lvl);
+        actionDone(aRequestDoneCB);
+      }
       return true;
+    }
+    else if (aUri=="operation") {
+      if (aIsAction && aData->get("action", o)) {
+        // operational actions
+        string a = o->stringValue();
+        if (a=="off") {
+          setMode(run_off);
+          actionDone(aRequestDoneCB);
+          return true;
+        }
+        else if (a=="auto") {
+          setMode(run_auto);
+          actionDone(aRequestDoneCB);
+          return true;
+        }
+        else if (a=="always") {
+          setMode(run_always);
+          actionDone(aRequestDoneCB);
+          return true;
+        }
+        else if (a=="findzero") {
+          findZero(boost::bind(&P44WiperD::actionStatus, this, aRequestDoneCB, _1));
+          return true;
+        }
+        else if (a=="calibrate") {
+          calibrate(boost::bind(&P44WiperD::actionStatus, this, aRequestDoneCB, _1));
+          return true;
+        }
+      }
     }
     // cannot process request
     return false;
@@ -856,6 +965,13 @@ public:
   {
     aRequestDoneCB(JsonObjectPtr(), ErrorPtr());
   }
+
+
+  void actionStatus(RequestDoneCB aRequestDoneCB, ErrorPtr aError = ErrorPtr())
+  {
+    aRequestDoneCB(JsonObjectPtr(), aError);
+  }
+
 
 
 
@@ -880,6 +996,12 @@ public:
 
 
   // MARK: ===== persistence implementation
+
+
+  ErrorPtr load()
+  {
+    return loadFromStore(NULL);
+  }
 
 
   void saveChanges()
