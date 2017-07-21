@@ -47,6 +47,8 @@ typedef struct {
   size_t offset;
   double min;
   double max;
+  double res;
+  double def;
 } SettingsFieldDef;
 
 
@@ -61,10 +63,16 @@ typedef struct {
   double rezeroSwingAngle; ///< max rezero swing from initial position [degrees]
   double findZeroRamp; ///< full power ramp time during zero position find [Seconds]
   double swingMaxPower; ///< swing max power [%]
+  double swingMinPower; ///< swing min power [%]
   double swingPeriod; ///< swing period [seconds]
   double swingCurveExp; ///< swing power curve exponent, -1.85 is near sine wave
   double midPointAdjustTime; ///< midpoint adjust ramp time [Seconds]
   double midPointSearchTime; ///< max time waiting for midpoint after swingdown ramp [Seconds]
+  double dirChangeTime; ///< time for changing direction [Seconds]
+  double runTimeAfterMovement; ///< how long wiper runs after detecting movement [Seconds]
+  double maxRunTime; ///< how long wiper will run totally (including retriggers) [Seconds]
+  double pauseTime; ///< how long wiper will not trigger again after a completed movement phase [Seconds]
+  double haltTime; // full ramp time when halting wiper [Seconds]",
 } WiperSettings;
 
 
@@ -76,6 +84,8 @@ static const SettingsFieldDef settingsFieldDefs[] = {
     .offset = OFFS(initialMode),
     .min = 0,
     .max = 2,
+    .res = 1,
+    .def = 0 // off
   },
   {
     .fieldName = "calibratePower",
@@ -84,6 +94,8 @@ static const SettingsFieldDef settingsFieldDefs[] = {
     .offset = OFFS(calibratePower),
     .min = 20,
     .max = 100,
+    .res = 1,
+    .def = 80 // moderate
   },
   {
     .fieldName = "calibrateRotationTime",
@@ -92,6 +104,8 @@ static const SettingsFieldDef settingsFieldDefs[] = {
     .offset = OFFS(calibrateRotationTime),
     .min = 1,
     .max = 10,
+    .res = 0.05,
+    .def = 3 // measured @ 80% power
   },
   {
     .fieldName = "rezeroSwingAngle",
@@ -100,6 +114,8 @@ static const SettingsFieldDef settingsFieldDefs[] = {
     .offset = OFFS(rezeroSwingAngle),
     .min = 30,
     .max = 200,
+    .res = 1,
+    .def = 90 // half circle max
   },
   {
     .fieldName = "findZeroRamp",
@@ -108,6 +124,8 @@ static const SettingsFieldDef settingsFieldDefs[] = {
     .offset = OFFS(findZeroRamp),
     .min = 0,
     .max = 1,
+    .res = 0.05,
+    .def = 0.1 // not too sudden start+stop
   },
   {
     .fieldName = "swingMaxPower",
@@ -116,22 +134,38 @@ static const SettingsFieldDef settingsFieldDefs[] = {
     .offset = OFFS(swingMaxPower),
     .min = 0,
     .max = 100,
+    .res = 1,
+    .def = 80 // moderate
+  },
+  {
+    .fieldName = "swingMinPower",
+    .title =  "Swing min power [%]",
+    .jsonType = json_type_double,
+    .offset = OFFS(swingMinPower),
+    .min = 0,
+    .max = 100,
+    .res = 1,
+    .def = 70 // almost off
   },
   {
     .fieldName = "swingPeriod",
     .title =  "Swing period [seconds]",
     .jsonType = json_type_double,
     .offset = OFFS(swingPeriod),
-    .min = -3,
-    .max = 3,
+    .min = 0,
+    .max = 2,
+    .res = 0.02,
+    .def = 0.3 // one swing time
   },
   {
     .fieldName = "swingCurveExp",
     .title =  "Swing power curve exponent, -1.85 is near sine wave",
     .jsonType = json_type_double,
     .offset = OFFS(swingCurveExp),
-    .min = -3,
-    .max = 3,
+    .min = -5,
+    .max = 5,
+    .res = 0.05,
+    .def = -1.85 // near sine
   },
   {
     .fieldName = "midPointAdjustTime",
@@ -140,6 +174,8 @@ static const SettingsFieldDef settingsFieldDefs[] = {
     .offset = OFFS(midPointAdjustTime),
     .min = 0,
     .max = 1,
+    .res = 0.02,
+    .def = 0.1 // quick
   },
   {
     .fieldName = "midPointSearchTime",
@@ -147,7 +183,59 @@ static const SettingsFieldDef settingsFieldDefs[] = {
     .jsonType = json_type_double,
     .offset = OFFS(midPointSearchTime),
     .min = 0,
-    .max = 1,
+    .max = 10,
+    .res = 0.1,
+    .def = 1 // not too long
+  },
+  {
+    .fieldName = "dirChangeTime",
+    .title =  "Time for changing direction [Seconds]",
+    .jsonType = json_type_double,
+    .offset = OFFS(dirChangeTime),
+    .min = 0,
+    .max = 5,
+    .res = 0.05,
+    .def = 0.2 // not too long
+  },
+  {
+    .fieldName = "runTimeAfterMovement",
+    .title =  "How long wiper runs after detecting movement [Seconds]",
+    .jsonType = json_type_double,
+    .offset = OFFS(runTimeAfterMovement),
+    .min = 5,
+    .max = 300,
+    .res = 1,
+    .def = 15 // a bit
+  },
+  {
+    .fieldName = "maxRunTime",
+    .title =  "How long wiper will run totally (including retriggers) [Seconds]",
+    .jsonType = json_type_double,
+    .offset = OFFS(maxRunTime),
+    .min = 5,
+    .max = 3600,
+    .res = 5,
+    .def = 30 // a bit more
+  },
+  {
+    .fieldName = "pauseTime",
+    .title =  "How long wiper will pause after completed movement [Seconds]",
+    .jsonType = json_type_double,
+    .offset = OFFS(pauseTime),
+    .min = 5,
+    .max = 1800,
+    .res = 5,
+    .def = 10 // a bit
+  },
+  {
+    .fieldName = "haltTime",
+    .title =  "Full ramp time when halting wiper [Seconds]",
+    .jsonType = json_type_double,
+    .offset = OFFS(haltTime),
+    .min = 0,
+    .max = 4,
+    .res = 0.05,
+    .def = 1 // a bit
   },
 };
 
@@ -236,10 +324,11 @@ class P44WiperD : public CmdLineApp, public PersistentParams
     mv_return_zero_ccw,
     mv_return_zero_more_ccw,
     mv_zeroed,
-    mv_swing_before_zero,
-    mv_swing_after_zero
+    mv_swing_cw_before_zero,
+    mv_swing_cw_after_zero,
+    mv_swing_ccw_before_zero,
+    mv_swing_ccw_after_zero
   } mvState;
-  int swingDirection;
 
 
   typedef enum {
@@ -248,6 +337,10 @@ class P44WiperD : public CmdLineApp, public PersistentParams
     run_always
   } RunMode;
   RunMode runMode;
+
+  bool swinging;
+  MLMicroSeconds runUntil;
+  MLMicroSeconds lastSwingChange;
 
 
 
@@ -260,7 +353,10 @@ public:
     runMode(run_off),
     opTicket(0),
     midPointSimTicket(0),
-    lastZeroPosTime(Never)
+    lastZeroPosTime(Never),
+    swinging(false),
+    lastSwingChange(Never),
+    runUntil(Never)
   {
     // default settings
     default_settings();
@@ -372,22 +468,6 @@ public:
   }
 
 
-  void default_settings()
-  {
-    settings.initialMode = 0; // off
-    settings.calibrateRotationTime = 1.413; // measured
-    settings.calibratePower = 80; // moderate speed
-    settings.rezeroSwingAngle = 90; // half circle max
-    settings.findZeroRamp = 0.1; // not too sudden start+stop
-    settings.swingCurveExp = -1.85; // near sine
-    settings.swingMaxPower = 80; // moderate
-    settings.swingPeriod = 1.5; // one swing time
-    settings.midPointAdjustTime = 0.3; // midpoint max adjust time
-    settings.midPointSearchTime = 1; // not too long
-  }
-
-
-
   virtual void initialize()
   {
     // execute command line actions, if any
@@ -448,18 +528,11 @@ public:
 
   void setMode(RunMode aRunMode)
   {
-    if (runMode!=aRunMode) {
-      LOG(LOG_NOTICE, "Changing run mode from %d to %d", runMode, aRunMode);
-      if (runMode==run_off && aRunMode==run_always) {
-        // start now
-        startSwing();
-      }
-      else if (runMode>=run_auto && aRunMode==run_off) {
-        // stop swing
-        stopSwing();
-      }
+    if (aRunMode!=runMode) {
+      runUntil = Never;
       runMode = aRunMode;
     }
+    checkSwing();
   }
 
 
@@ -477,8 +550,8 @@ public:
       LOG(LOG_ERR, "%s, use button to try again", aError->description().c_str());
       return;
     }
-    LOG(LOG_NOTICE, "Start swinging now");
-    startSwing();
+    LOG(LOG_NOTICE, "Ready -> check run mode");
+    checkSwing();
   }
 
 
@@ -511,20 +584,31 @@ public:
   {
     if (aHasChanged && !aState && aTimeSincePreviousChange>5*Second) {
       // pressed more than 5 seconds
+      stopSwing();
       calibrate(NULL);
     }
     else if (aHasChanged && !aState) {
-      // back to normal operation
-      motorDriver->rampToPower(0, 0, 0.5*Second, 0, boost::bind(&P44WiperD::normalOperation, this));
+      if (swinging) {
+        // stop
+        stopSwing();
+      }
+      else {
+        // back to normal operation
+        normalOperation();
+      }
     }
   }
 
 
   void movementHandler(bool aNewState)
   {
-    // %%% Nop for now
     LOG(LOG_NOTICE, "Movement signal = %d", aNewState);
     redLed->steady(aNewState);
+    if (aNewState) {
+      // trigger
+      runUntil = MainLoop::now()+settings.runTimeAfterMovement*Second;
+      checkSwing();
+    }
   }
 
 
@@ -557,7 +641,7 @@ public:
 
   void zeroPosHandler(bool aNewState)
   {
-    LOG(LOG_NOTICE, "Zero position signal = %d", aNewState);
+    LOG(LOG_INFO, "Zero position signal = %d", aNewState);
     greenLed->steady(aNewState);
     if (aNewState) {
       // starting edge
@@ -585,8 +669,9 @@ public:
           endOp();
           break;
         // swing states ;-)
-        case mv_swing_before_zero:
-          LOG(LOG_INFO,"Swing midpoint -> decelerating");
+        case mv_swing_cw_before_zero:
+        case mv_swing_ccw_before_zero:
+          LOG(LOG_INFO,"Swing midpoint DETECTED");
           swingMidpoint();
           break;
         default:
@@ -674,49 +759,122 @@ public:
   }
 
 
-  void startSwing()
+  void checkSwing()
   {
-    if (mvState==mv_zeroed) {
-      // start swing from "hanging" down position: move a bit to the side
-      swingDirection = 1; // start clockwise
-      swingMidpoint();
+    if (runMode==run_auto) {
+      // auto-stop
+      MLMicroSeconds now = MainLoop::now();
+      if (swinging) {
+        // is on
+        if (
+          (runUntil==Never) || // no run time set at all
+          (now>runUntil) || // current trigger time exhausted
+          (lastSwingChange!=Never && now>lastSwingChange+settings.maxRunTime*Second) // total run time exhausted
+        ) {
+          LOG(LOG_NOTICE, "Timed run ends here -> stopping");
+          stopSwing();
+        }
+      }
+      else {
+        // is off
+        if (runUntil!=Never) {
+          if (now>lastSwingChange+settings.pauseTime*Second) {
+            startSwing();
+          }
+          else {
+            // pause not yet over
+            LOG(LOG_NOTICE, "Pause not yet over -> not starting");
+          }
+        }
+      }
+    }
+    else if (runMode==run_always) {
+      // unconditionally start
+      startSwing();
     }
     else {
-      // just decelerate towards midpoint
-      swingDecelerate();
+      // otherwise: stop
+      stopSwing();
+    }
+  }
+
+
+
+  void startSwing()
+  {
+    if (!swinging) {
+      switch (mvState) {
+        case mv_zeroed:
+          mvState = mv_swing_cw_before_zero; // start clockwise
+          goto run;
+        case mv_swing_cw_before_zero:
+        case mv_swing_ccw_before_zero:
+        case mv_swing_cw_after_zero:
+        case mv_swing_ccw_after_zero:
+        run:
+          if (zeroPosInput->isSet()) {
+            // special case: start swing from "hanging" down position
+            swingMidpoint();
+          }
+          else {
+            // accelerate towards midpoint
+            swingAccelerate();
+          }
+          break;
+        default:
+          // other modes: not ready
+          LOG(LOG_WARNING, "Not in defined state to start swing");
+          swinging = false;
+          return;
+      }
+      swinging = true;
+      lastSwingChange = MainLoop::now();
     }
   }
 
 
   void stopSwing()
   {
-    if (mvState==mv_swing_after_zero) {
-      // was moving up, reverse direction for next restart
-      swingDirection *= -1;
+    if (swinging) {
+      // swinging active
+      MainLoop::currentMainLoop().cancelExecutionTicket(midPointSimTicket);
+      swinging = false;
+      lastSwingChange = MainLoop::now();
+      motorDriver->rampToPower(0, 0, -settings.haltTime, 0);
     }
-    if (zeroPosInput->isSet()) {
-      mvState = mv_zeroed;
-    }
-    MainLoop::currentMainLoop().cancelExecutionTicket(midPointSimTicket);
-    motorDriver->stop();
   }
 
+
+  int currentDir()
+  {
+    int dir = 0;
+    if (mvState==mv_swing_cw_before_zero || mvState==mv_swing_cw_after_zero) {
+      dir = 1;
+    }
+    else if (mvState==mv_swing_ccw_before_zero || mvState==mv_swing_ccw_after_zero) {
+      dir = -1;
+    }
+    return dir;
+  }
 
 
   void swingAccelerate()
   {
-    // assuming at left or right endpoint of swing
-    mvState = mv_swing_before_zero;
+    // always towards middle, so always before zero
+    // - convert to accelrating state
+    if (mvState==mv_swing_cw_after_zero) mvState = mv_swing_ccw_before_zero;
+    else if (mvState==mv_swing_ccw_after_zero) mvState = mv_swing_cw_before_zero;
+    int dir = currentDir();
     // - ramp power up twoards midpoint
-    motorDriver->rampToPower(settings.swingMaxPower, swingDirection, settings.swingPeriod/2, settings.swingCurveExp, boost::bind(&P44WiperD::swingAccelerated, this));
+    motorDriver->rampToPower(settings.swingMaxPower, dir, settings.swingPeriod/2, settings.swingCurveExp, boost::bind(&P44WiperD::swingAccelerated, this));
   }
 
 
   void swingAccelerated()
   {
-    LOG(LOG_INFO,"Swing accelerated to max, waiting for midpoint");
+    LOG(LOG_INFO,"Swing accelerated to max, waiting for midpoint, current dir = %d", currentDir());
     if (settings.midPointSearchTime) {
-      MainLoop::currentMainLoop().executeTicketOnce(midPointSimTicket, boost::bind(&P44WiperD::swingMidpoint, this), settings.midPointSearchTime);
+      MainLoop::currentMainLoop().executeTicketOnce(midPointSimTicket, boost::bind(&P44WiperD::swingMidpoint, this), settings.midPointSearchTime*Second);
     }
   }
 
@@ -724,24 +882,40 @@ public:
   void swingMidpoint()
   {
     MainLoop::currentMainLoop().cancelExecutionTicket(midPointSimTicket);
-    mvState = mv_swing_after_zero;
-    // quickly set midpoint speed
-    motorDriver->rampToPower(settings.swingMaxPower, swingDirection, settings.midPointAdjustTime, 0, boost::bind(&P44WiperD::swingDecelerate, this));
+    int dir = currentDir();
+    LOG(LOG_INFO,"Swing midpoint (detected or simulated), current dir = %d", dir);
+    mvState = dir>0 ? mv_swing_cw_after_zero : mv_swing_ccw_after_zero;
+    // if still on -> quickly set midpoint speed
+    motorDriver->rampToPower(settings.swingMaxPower, dir, settings.midPointAdjustTime, 0, boost::bind(&P44WiperD::swingDecelerate, this));
+    MainLoop::currentMainLoop().executeOnce(boost::bind(&P44WiperD::checkSwing, this), MilliSecond);
   }
 
 
   void swingDecelerate()
   {
     // assuming midpoint at full speed
+    int dir = currentDir();
     // - ramp power down twoards endpoint
-    motorDriver->rampToPower(0, swingDirection, settings.swingPeriod/2, -settings.swingCurveExp, boost::bind(&P44WiperD::swingDecelerated, this));
+    motorDriver->rampToPower(settings.swingMinPower, dir, settings.swingPeriod/2, -settings.swingCurveExp, boost::bind(&P44WiperD::swingDecelerated, this));
   }
 
 
   void swingDecelerated()
   {
-    LOG(LOG_INFO,"Swing decelerated to zero, reversing direction and accelerating again");
-    swingDirection *= -1;
+    // change direction
+    int dir = currentDir();
+    LOG(LOG_INFO,"Swing decelerated to minimum, current dir = %d -> reversing direction", dir);
+    mvState = dir>0 ? mv_swing_ccw_before_zero : mv_swing_cw_before_zero;
+    dir = currentDir();
+    // - same power, but reversed direction
+    motorDriver->rampToPower(settings.swingMinPower, dir, settings.dirChangeTime, 0, boost::bind(&P44WiperD::swingDirChanged, this));
+  }
+
+
+  void swingDirChanged()
+  {
+    LOG(LOG_INFO,"Swing direction changed, accelerating again, current dir = %d", currentDir());
+    // accelerate again
     swingAccelerate();
   }
 
@@ -906,10 +1080,14 @@ public:
           if (fdef.jsonType==json_type_double) {
             fld->add("min", JsonObject::newDouble(fdef.min));
             fld->add("max", JsonObject::newDouble(fdef.max));
+            if (fdef.res!=0) fld->add("res", JsonObject::newDouble(fdef.res));
+            fld->add("def", JsonObject::newDouble(fdef.def));
           }
           else if (fdef.jsonType==json_type_int) {
             fld->add("min", JsonObject::newInt64(fdef.min));
             fld->add("max", JsonObject::newInt64(fdef.max));
+            if (fdef.res!=0) fld->add("res", JsonObject::newInt64(fdef.res));
+            fld->add("def", JsonObject::newInt64(fdef.def));
           }
           fld->add("value", fieldAsJSON(fdef));
           res->add(fdef.fieldName, fld);
@@ -1018,6 +1196,23 @@ public:
       LOG(LOG_ERR, "cannot save params: %s", err->description().c_str());
     }
   }
+
+
+  void default_settings()
+  {
+    for (int i=0; i<numSettingsFields; i++) {
+      const SettingsFieldDef &fdef = settingsFieldDefs[i];
+      switch (fdef.jsonType) {
+        case json_type_boolean: FLD(bool, fdef.offset) = fdef.def>0; break;
+        case json_type_double: FLD(double, fdef.offset) = fdef.def; break;
+        case json_type_int: FLD(int, fdef.offset) = fdef.def; break;
+        default: break; // cannot initialize other types
+      }
+    }
+  }
+
+
+
 
 
 

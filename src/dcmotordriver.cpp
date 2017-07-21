@@ -115,15 +115,16 @@ void DcMotorDriver::stopSequences()
 
 
 
-void DcMotorDriver::rampToPower(double aPower, int aDirection, double aFullRampTime, double aRampExp, DCMotorStatusCB aRampDoneCB)
+void DcMotorDriver::rampToPower(double aPower, int aDirection, double aRampTime, double aRampExp, DCMotorStatusCB aRampDoneCB)
 {
-  LOG(LOG_DEBUG, "+++ new ramp: power: %.2f%%..%.2f%%, direction:%d..%d with full ramp time %.3f Seconds, exp=%.2f", currentPower, aPower, currentDirection, aDirection, aFullRampTime, aRampExp);
+  LOG(LOG_DEBUG, "+++ new ramp: power: %.2f%%..%.2f%%, direction:%d..%d with ramp time %.3f Seconds, exp=%.2f", currentPower, aPower, currentDirection, aDirection, aRampTime, aRampExp);
   MainLoop::currentMainLoop().cancelExecutionTicket(sequenceTicket);
   if (aDirection!=currentDirection) {
     if (currentPower!=0) {
       // ramp to zero first, then ramp up to new direction
       LOG(LOG_DEBUG, "Ramp trough different direction modes -> first ramp power down, then up again");
-      rampToPower(0, currentDirection, aFullRampTime, aRampExp, boost::bind(&DcMotorDriver::rampToPower, this, aPower, aDirection, aFullRampTime, aRampExp, aRampDoneCB));
+      if (aRampTime>0) aRampTime /= 2; // for absolute ramp time specificiation, just use half of the time for ramp up or down, resp. 
+      rampToPower(0, currentDirection, aRampTime, aRampExp, boost::bind(&DcMotorDriver::rampToPower, this, aPower, aDirection, aRampTime, aRampExp, aRampDoneCB));
       return;
     }
     // set new direction
@@ -134,7 +135,15 @@ void DcMotorDriver::rampToPower(double aPower, int aDirection, double aFullRampT
   else if (aPower<0) aPower=0;
   // ramp to new value
   double rampRange = aPower-currentPower;
-  MLMicroSeconds totalRampTime = fabs(rampRange)/100*aFullRampTime*Second;
+  MLMicroSeconds totalRampTime;
+  if (aRampTime<0) {
+    // specification is 0..100 ramp time, scale according to power difference
+    totalRampTime = fabs(rampRange)/100*(-aRampTime)*Second;
+  }
+  else {
+    // absolute specification
+    totalRampTime = aRampTime*Second;
+  }
   int numSteps = (int)(totalRampTime/RAMP_STEP_TIME)+1;
   LOG(LOG_DEBUG, "Ramp power from %.2f%% to %.2f%% in %lld uS (%d steps)", currentPower, aPower, totalRampTime, numSteps);
   // now execute the ramp

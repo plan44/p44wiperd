@@ -99,6 +99,10 @@
             isEnabled = "YES">
          </CommandLineArgument>
          <CommandLineArgument
+            argument = "--movementinput sim.move"
+            isEnabled = "YES">
+         </CommandLineArgument>
+         <CommandLineArgument
             argument = "--button sim.button"
             isEnabled = "YES">
          </CommandLineArgument>

@@ -69,11 +69,13 @@ namespace p44 {
     /// ramp motor from current power to another power
     /// @param aPower 0..100 new brake or drive power to apply
     /// @param aDirection driving direction: 1 = CW, -1 = CCW, 0 = hold/brake
-    /// @param aFullRampTime number of seconds for a full scale (0..100 or vice versa) power change.
+    /// @param aRampTime number of seconds for running this ramp.
+    ///   If negative, this specifies the time for a full scale (0..100 or vice versa) power change, actual time will
+    ///   be proportional to power range actually run trough.
     ///   Note that ramping from one aDirection to another will execute two separate ramps in sequence
     /// @param aRampExp ramp exponent (0=linear, + or - = logarithmic bulging up or down)
     /// @param aRampDoneCB will be called at end of ramp
-    void rampToPower(double aPower, int aDirection, double aFullRampTime = 0, double aRampExp = 0, DCMotorStatusCB aRampDoneCB = NULL);
+    void rampToPower(double aPower, int aDirection, double aRampTime = 0, double aRampExp = 0, DCMotorStatusCB aRampDoneCB = NULL);
 
     /// stop immediately, no braking
     void stop();
