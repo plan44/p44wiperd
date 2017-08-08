@@ -52,12 +52,18 @@ typedef struct {
 } SettingsFieldDef;
 
 
+enum {
+  wiper_mechanical = 0,
+  wiper_software = 1
+};
+
 
 #define OFFS(fld) offsetof(WiperSettings, fld)
 #define FLD(ty,offs) (*((ty*)(((char *)&settings)+offs)))
 
 typedef struct {
   int initialMode; ///< initial run mode
+  int wiperType; ///< initial run mode
   double calibratePower; ///< calibration power [%]
   double calibrateRotationTime; ///< time a full rotation takes at calibration power [Seconds]
   double rezeroSwingAngle; ///< max rezero swing from initial position [degrees]
@@ -86,6 +92,16 @@ static const SettingsFieldDef settingsFieldDefs[] = {
     .max = 2,
     .res = 1,
     .def = 0 // off
+  },
+  {
+    .fieldName = "wiperType",
+    .title =  "Type of wiper motor: 0=mechanical wiper, 1=just motor with software controlled wiping",
+    .jsonType = json_type_int,
+    .offset = OFFS(wiperType),
+    .min = 0,
+    .max = 1,
+    .res = 1,
+    .def = wiper_software // new wiper with software wiping
   },
   {
     .fieldName = "calibratePower",
@@ -129,7 +145,7 @@ static const SettingsFieldDef settingsFieldDefs[] = {
   },
   {
     .fieldName = "swingMaxPower",
-    .title =  "Swing max power [%]",
+    .title =  "Swing max power [%] (also for mechanical wiper type)",
     .jsonType = json_type_double,
     .offset = OFFS(swingMaxPower),
     .min = 0,
@@ -229,13 +245,13 @@ static const SettingsFieldDef settingsFieldDefs[] = {
   },
   {
     .fieldName = "haltTime",
-    .title =  "Full ramp time when halting wiper [Seconds]",
+    .title =  "Full ramp time when halting wiper (or starting mechanical wiper) [Seconds]",
     .jsonType = json_type_double,
     .offset = OFFS(haltTime),
     .min = 0,
     .max = 4,
     .res = 0.05,
-    .def = 1 // a bit
+    .def = 0.4 // a bit
   },
 };
 
@@ -312,6 +328,8 @@ class P44WiperD : public CmdLineApp, public PersistentParams
   MLMicroSeconds starttime;
   MLMicroSeconds lastZeroPosTime;
   long midPointSimTicket;
+  long mechModeCheckTicket;
+  long extraCheckSwingTicket;
   long opTicket;
   StatusCB opDoneCB;
 
@@ -353,6 +371,8 @@ public:
     runMode(run_off),
     opTicket(0),
     midPointSimTicket(0),
+    mechModeCheckTicket(0),
+    extraCheckSwingTicket(0),
     lastZeroPosTime(Never),
     swinging(false),
     lastSwingChange(Never),
@@ -588,13 +608,15 @@ public:
       calibrate(NULL);
     }
     else if (aHasChanged && !aState) {
-      if (swinging) {
-        // stop
-        stopSwing();
+      if (runMode==run_off) {
+        // restart
+        setMode((RunMode)settings.initialMode); // initial mode again
+        normalOperation();
       }
       else {
-        // back to normal operation
-        normalOperation();
+        // immediate stop
+        setMode(run_off);
+        checkSwing();
       }
     }
   }
@@ -606,8 +628,7 @@ public:
     redLed->steady(aNewState);
     if (aNewState) {
       // trigger
-      runUntil = MainLoop::now()+settings.runTimeAfterMovement*Second;
-      checkSwing();
+      checkMovement();
     }
   }
 
@@ -643,42 +664,44 @@ public:
   {
     LOG(LOG_INFO, "Zero position signal = %d", aNewState);
     greenLed->steady(aNewState);
-    if (aNewState) {
-      // starting edge
-      switch (mvState) {
-        // calibration states
-        case mv_calibrate_find_zero:
-          // first zero pos pass, now start measuring
-          mvState = mv_calibrate_measure;
-          break;
-        case mv_calibrate_measure:
-          // second zero pos pass, done
-          mvState = mv_zeroed;
-          settings.calibrateRotationTime = (double)(MainLoop::now()-lastZeroPosTime)/Second;
-          motorDriver->stop();
-          LOG(LOG_NOTICE, "Calibration done, rotation time = %.2f Seconds", settings.calibrateRotationTime);
-          saveChanges();
-          endOp();
-          break;
-        // zero find states
-        case mv_return_zero_cw:
-        case mv_return_zero_ccw:
-          mvState = mv_zeroed;
-          motorDriver->stop();
-          LOG(LOG_NOTICE, "Found zero position");
-          endOp();
-          break;
-        // swing states ;-)
-        case mv_swing_cw_before_zero:
-        case mv_swing_ccw_before_zero:
-          LOG(LOG_INFO,"Swing midpoint DETECTED");
-          swingMidpoint();
-          break;
-        default:
-          break;
+    if (settings.wiperType==wiper_software) {
+      if (aNewState) {
+        // starting edge
+        switch (mvState) {
+          // calibration states
+          case mv_calibrate_find_zero:
+            // first zero pos pass, now start measuring
+            mvState = mv_calibrate_measure;
+            break;
+          case mv_calibrate_measure:
+            // second zero pos pass, done
+            mvState = mv_zeroed;
+            settings.calibrateRotationTime = (double)(MainLoop::now()-lastZeroPosTime)/Second;
+            motorDriver->stop();
+            LOG(LOG_NOTICE, "Calibration done, rotation time = %.2f Seconds", settings.calibrateRotationTime);
+            saveChanges();
+            endOp();
+            break;
+          // zero find states
+          case mv_return_zero_cw:
+          case mv_return_zero_ccw:
+            mvState = mv_zeroed;
+            motorDriver->stop();
+            LOG(LOG_NOTICE, "Found zero position");
+            endOp();
+            break;
+          // swing states ;-)
+          case mv_swing_cw_before_zero:
+          case mv_swing_ccw_before_zero:
+            LOG(LOG_INFO,"Swing midpoint DETECTED");
+            swingMidpoint();
+            break;
+          default:
+            break;
+        }
+        // remember time
+        lastZeroPosTime = MainLoop::now();
       }
-      // remember time
-      lastZeroPosTime = MainLoop::now();
     }
   }
 
@@ -686,11 +709,16 @@ public:
 
   void calibrate(StatusCB aDoneCB)
   {
-    // smoothly start turning
     startOp(aDoneCB);
-    motorDriver->stop();
-    mvState = mv_busy;
-    motorDriver->rampToPower(settings.calibratePower, 1, 1, 0, boost::bind(&P44WiperD::calibrateUpToSpeed, this));
+    if (settings.wiperType==wiper_mechanical) {
+      endOp(); // NOP
+    }
+    else {
+      // smoothly start turning
+      motorDriver->stop();
+      mvState = mv_busy;
+      motorDriver->rampToPower(settings.calibratePower, 1, 1, 0, boost::bind(&P44WiperD::calibrateUpToSpeed, this));
+    }
   }
 
 
@@ -717,14 +745,19 @@ public:
   {
     startOp(aDoneCB);
     motorDriver->stop();
-    if (zeroPosInput->isSet()) {
-      zeroFindEnd(true);
-      return;
+    if (settings.wiperType==wiper_mechanical) {
+      endOp(); // NOP
     }
-    // - move at max one quarter clockwise
-    mvState = mv_return_zero_cw;
-    motorDriver->rampToPower(settings.calibratePower, 1, settings.findZeroRamp);
-    MainLoop::currentMainLoop().executeTicketOnce(opTicket, boost::bind(&P44WiperD::zeroFindTimeout, this), settings.calibrateRotationTime*settings.rezeroSwingAngle/360*Second);
+    else {
+      if (zeroPosInput->isSet()) {
+        zeroFindEnd(true);
+        return;
+      }
+      // - move at max one quarter clockwise
+      mvState = mv_return_zero_cw;
+      motorDriver->rampToPower(settings.calibratePower, 1, settings.findZeroRamp);
+      MainLoop::currentMainLoop().executeTicketOnce(opTicket, boost::bind(&P44WiperD::zeroFindTimeout, this), settings.calibrateRotationTime*settings.rezeroSwingAngle/360*Second);
+    }
   }
 
 
@@ -774,16 +807,23 @@ public:
           LOG(LOG_NOTICE, "Timed run ends here -> stopping");
           stopSwing();
         }
+        else if (runUntil!=Never) {
+          // schedule a re-check in time
+          MainLoop::currentMainLoop().executeTicketOnceAt(extraCheckSwingTicket, boost::bind(&P44WiperD::checkSwing, this), runUntil);
+        }
       }
       else {
         // is off
         if (runUntil!=Never) {
-          if (now>lastSwingChange+settings.pauseTime*Second) {
+          MLMicroSeconds startNotBefore = lastSwingChange+settings.pauseTime*Second;
+          if (now>startNotBefore) {
             startSwing();
           }
           else {
             // pause not yet over
             LOG(LOG_NOTICE, "Pause not yet over -> not starting");
+            // schedule a re-check of movement status in time
+            MainLoop::currentMainLoop().executeTicketOnceAt(extraCheckSwingTicket, boost::bind(&P44WiperD::checkMovement, this), startNotBefore);
           }
         }
       }
@@ -799,35 +839,53 @@ public:
   }
 
 
+  void checkMovement()
+  {
+    if (movementInput->isSet()) {
+      runUntil = MainLoop::now()+settings.runTimeAfterMovement*Second;
+      checkSwing();
+    }
+  }
+
+
+
 
   void startSwing()
   {
     if (!swinging) {
-      switch (mvState) {
-        case mv_zeroed:
-          mvState = mv_swing_cw_before_zero; // start clockwise
-          goto run;
-        case mv_swing_cw_before_zero:
-        case mv_swing_ccw_before_zero:
-        case mv_swing_cw_after_zero:
-        case mv_swing_ccw_after_zero:
-        run:
-          if (zeroPosInput->isSet()) {
-            // special case: start swing from "hanging" down position
-            swingMidpoint();
-          }
-          else {
-            // accelerate towards midpoint
-            swingAccelerate();
-          }
-          break;
-        default:
-          // other modes: not ready
-          LOG(LOG_WARNING, "Not in defined state to start swing");
-          swinging = false;
-          return;
+      if (settings.wiperType==wiper_mechanical) {
+        // simple mechanical wiper
+        swinging = true;
+        MainLoop::currentMainLoop().executeTicketOnce(mechModeCheckTicket, boost::bind(&P44WiperD::mechanicalSwingRecheck, this), 0.3*Second);
       }
-      swinging = true;
+      else {
+        // software wiper
+        switch (mvState) {
+          case mv_zeroed:
+            mvState = mv_swing_cw_before_zero; // start clockwise
+            goto run;
+          case mv_swing_cw_before_zero:
+          case mv_swing_ccw_before_zero:
+          case mv_swing_cw_after_zero:
+          case mv_swing_ccw_after_zero:
+          run:
+            if (zeroPosInput->isSet()) {
+              // special case: start swing from "hanging" down position
+              swingMidpoint();
+            }
+            else {
+              // accelerate towards midpoint
+              swingAccelerate();
+            }
+            break;
+          default:
+            // other modes: not ready
+            LOG(LOG_WARNING, "Not in defined state to start swing");
+            swinging = false;
+            return;
+        }
+        swinging = true;
+      }
       lastSwingChange = MainLoop::now();
     }
   }
@@ -837,10 +895,23 @@ public:
   {
     if (swinging) {
       // swinging active
+      MainLoop::currentMainLoop().cancelExecutionTicket(mechModeCheckTicket);
       MainLoop::currentMainLoop().cancelExecutionTicket(midPointSimTicket);
+      motorDriver->rampToPower(0, 0, -settings.haltTime, 0);
       swinging = false;
       lastSwingChange = MainLoop::now();
-      motorDriver->rampToPower(0, 0, -settings.haltTime, 0);
+    }
+  }
+
+
+  void mechanicalSwingRecheck()
+  {
+    checkSwing();
+    if (swinging) {
+      // ramp to new power (usually already set, but in case settings are changed we want see it change speed live)
+      motorDriver->rampToPower(settings.swingMaxPower, 1, -settings.haltTime, 0);
+      // must check for timeouts in regular intervals
+      MainLoop::currentMainLoop().executeTicketOnce(mechModeCheckTicket, boost::bind(&P44WiperD::mechanicalSwingRecheck, this), 0.3*Second);
     }
   }
 
